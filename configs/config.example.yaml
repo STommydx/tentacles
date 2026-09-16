@@ -77,6 +77,8 @@ runtime:
   slot_stop_timeout: 30s
   cleanup_timeout: 60s
   acquire_grace: 3m
+  idle_grace: 30s               # spare freshly idle runners from surplus stops while a
+                                # JobStarted message may still be in flight
 
 observability:
   listen: 127.0.0.1:9090

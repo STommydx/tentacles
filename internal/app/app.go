@@ -240,6 +240,7 @@ func newDaemonContext(
 		tableOptions := []slot.TableOption{
 			slot.WithNamespace(poolConfig.ID),
 			slot.WithAcquireGrace(cfg.Runtime.AcquireGrace),
+			slot.WithIdleGrace(cfg.Runtime.IdleGrace),
 			slot.WithStartAllowed(func() bool { return pool.acquireRetryWait() == 0 }),
 			slot.WithStopTimeout(cfg.Runtime.SlotStopTimeout),
 			slot.WithCleanupTimeout(cfg.Runtime.CleanupTimeout),
@@ -589,15 +590,17 @@ func (d *daemon) requestReconcile() {
 	}
 }
 
-// shutdownSlots stops idle and starting slots in every pool. Busy runners
-// finish naturally and are adopted from their pool namespace after restart.
+// shutdownSlots stops every pool's surplus slots now, bypassing the idle
+// grace: no new assignment can be honored once the daemon is going away.
+// Starting slots still keep their acquire grace and busy runners finish
+// naturally; both are adopted from their pool namespace after restart.
 func (d *daemon) shutdownSlots() {
 	for _, pool := range d.pools {
 		shutdownContext, cancel := context.WithTimeout(
 			context.Background(),
 			d.cfg.Runtime.SlotStopTimeout,
 		)
-		if err := pool.table.Ensure(shutdownContext, 0); err != nil {
+		if err := pool.table.Shutdown(shutdownContext); err != nil {
 			pool.log.Error("stopping idle slots on shutdown", "err", err)
 		}
 		cancel()

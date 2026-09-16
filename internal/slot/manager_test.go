@@ -312,7 +312,7 @@ func TestTableEnsureIdempotent(t *testing.T) {
 
 func TestTableStopOnlyIdleNeverBusy(t *testing.T) {
 	backend := &fakeBackend{}
-	tab, rec, jitDir := newTestTable(t, backend)
+	tab, rec, jitDir := newTestTable(t, backend, WithIdleGrace(0))
 	ctx := context.Background()
 
 	if err := tab.Ensure(ctx, 2); err != nil {
@@ -359,7 +359,7 @@ func TestTableStopOnlyIdleNeverBusy(t *testing.T) {
 
 func TestTableStopOldestIdlePreferred(t *testing.T) {
 	backend := &fakeBackend{}
-	tab, _, _ := newTestTable(t, backend)
+	tab, _, _ := newTestTable(t, backend, WithIdleGrace(0))
 	ctx := context.Background()
 
 	if err := tab.Ensure(ctx, 2); err != nil {
@@ -405,6 +405,91 @@ func TestTableStopSurplusBusyOnlyDoesNothing(t *testing.T) {
 	}
 	if len(tab.Active()) != 2 {
 		t.Fatalf("active = %v, want both busy slots", slotIDs(tab.Active()))
+	}
+}
+
+// TestTableFreshIdleSlotSafeFromSurplusStop reproduces issue #4: GitHub
+// assigns a job to an idle runner out of band, and the JobStarted message
+// that would mark the slot busy arrives only later. A slot that became
+// idle within the idle grace must not be picked as surplus, so the late
+// claim still lands on a live runner. Once the grace passes, an
+// unclaimed idle slot is stopped as surplus again.
+func TestTableFreshIdleSlotSafeFromSurplusStop(t *testing.T) {
+	backend := &fakeBackend{}
+	tab, _, _ := newTestTable(t, backend, WithIdleGrace(150*time.Millisecond))
+	ctx := context.Background()
+
+	if err := tab.Ensure(ctx, 2); err != nil {
+		t.Fatal(err)
+	}
+	// Surplus decisions within the grace spare both freshly idle slots.
+	if err := tab.Ensure(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	// The late JobStarted from GitHub's out-of-band assignment.
+	if !tab.Claim(ClaimJob{RunnerName: "debian-host-0001-ab12", WorkflowRef: "o/r/w.yml@main"}) {
+		t.Fatal("Claim failed for freshly idle slot")
+	}
+	if err := tab.Ensure(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond) // let any wrong stop land
+	backend.mu.Lock()
+	stopped := append([]string(nil), backend.stopped...)
+	backend.mu.Unlock()
+	if len(stopped) != 0 {
+		t.Fatalf("surplus decision stopped a slot within the idle grace: %v", stopped)
+	}
+	if got := slotIDs(tab.Active()); fmt.Sprint(got) != fmt.Sprint([]ID{"0001", "0002"}) {
+		t.Fatalf("active = %v, want both slots after in-grace surplus decisions", got)
+	}
+	if st, ok := stateOf(tab, "0001"); !ok || st != StateBusy {
+		t.Fatalf("claimed slot state = %q, ok=%v; want busy", st, ok)
+	}
+
+	// Past the grace the unclaimed idle slot is stopped; the busy one is not.
+	time.Sleep(150 * time.Millisecond)
+	if err := tab.Ensure(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 3*time.Second, func() bool {
+		_, err := os.Stat(filepath.Join(tab.root, "0002"))
+		return os.IsNotExist(err)
+	})
+	backend.mu.Lock()
+	stopped = append([]string(nil), backend.stopped...)
+	backend.mu.Unlock()
+	if fmt.Sprint(stopped) != fmt.Sprint([]string{"tentacle-default-0002.service"}) {
+		t.Fatalf("stopped = %v, want only the grace-expired idle slot", stopped)
+	}
+	if st, ok := stateOf(tab, "0001"); !ok || st != StateBusy {
+		t.Fatalf("claimed slot state = %q, ok=%v; want busy after scale-down", st, ok)
+	}
+}
+
+// TestTableShutdownStopsFreshIdleSlot: daemon shutdown bypasses the idle
+// grace — no further assignment can be honored, so a freshly idle slot
+// is stopped immediately.
+func TestTableShutdownStopsFreshIdleSlot(t *testing.T) {
+	backend := &fakeBackend{}
+	tab, _, _ := newTestTable(t, backend, WithIdleGrace(time.Hour))
+	ctx := context.Background()
+
+	if err := tab.Ensure(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := tab.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 3*time.Second, func() bool {
+		_, err := os.Stat(filepath.Join(tab.root, "0001"))
+		return os.IsNotExist(err)
+	})
+	backend.mu.Lock()
+	stopped := append([]string(nil), backend.stopped...)
+	backend.mu.Unlock()
+	if fmt.Sprint(stopped) != fmt.Sprint([]string{"tentacle-default-0001.service"}) {
+		t.Fatalf("stopped = %v, want shutdown to bypass the idle grace", stopped)
 	}
 }
 
