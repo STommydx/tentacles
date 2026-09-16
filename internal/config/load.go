@@ -114,6 +114,9 @@ func applyDefaults(c *Config, disableUpdateSet, shipDiagSet, admissionSet, margi
 	if c.Runtime.AcquireGrace == 0 {
 		c.Runtime.AcquireGrace = DefaultAcquireGrace
 	}
+	if c.Runtime.IdleGrace == 0 {
+		c.Runtime.IdleGrace = DefaultIdleGrace
+	}
 
 	if c.Observability.Listen == "" {
 		c.Observability.Listen = DefaultListen

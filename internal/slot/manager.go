@@ -23,6 +23,7 @@ import (
 // with the With* options; production values come from config.
 const (
 	defaultAcquireGrace   = 3 * time.Minute
+	defaultIdleGrace      = 30 * time.Second
 	defaultStopTimeout    = 30 * time.Second
 	defaultCleanupTimeout = 60 * time.Second
 	defaultStartTimeout   = 90 * time.Second
@@ -38,6 +39,7 @@ type tableOptions struct {
 	startAllowed       func() bool
 	reservation        func() (float64, uint64)
 	acquireGrace       time.Duration
+	idleGrace          time.Duration
 	stopTimeout        time.Duration
 	cleanupTimeout     time.Duration
 	startTimeout       time.Duration
@@ -94,11 +96,22 @@ type TableOption func(*tableOptions)
 // WithAcquireGrace sets the window a freshly started runner has to claim
 // its first job. A process exit before the window closes without a job
 // is classified as an acquire failure, and a slot still in
-// "starting" past the window may be stopped as surplus. Idle
-// slots are never reaped — idleness is the warm pool. Non-positive
+// "starting" past the window may be stopped as surplus. Non-positive
 // values disable both uses. Default 3m.
 func WithAcquireGrace(d time.Duration) TableOption {
 	return func(o *tableOptions) { o.acquireGrace = d }
+}
+
+// WithIdleGrace sets the window after a slot becomes idle during which
+// surplus scale-down will not stop it. GitHub assigns jobs to idle
+// runners out of band, and the JobStarted message that marks the slot
+// busy arrives only after the assignment; stopping a freshly idle slot
+// in that gap kills a job that never had a chance to run (issue #4).
+// The window only delays surplus stops: daemon shutdown bypasses it via
+// Shutdown, and busy slots are never stopped either way. Non-positive
+// values disable the protection. Default 30s.
+func WithIdleGrace(d time.Duration) TableOption {
+	return func(o *tableOptions) { o.idleGrace = d }
 }
 
 // WithStopTimeout bounds each backend.Stop call issued by the Table.
@@ -248,6 +261,7 @@ func NewTable(root string, backend runner.Backend, materialize func(dst string) 
 		namespace:      defaultNamespace,
 		acquireGrace:   defaultAcquireGrace,
 		stopTimeout:    defaultStopTimeout,
+		idleGrace:      defaultIdleGrace,
 		cleanupTimeout: defaultCleanupTimeout,
 		startTimeout:   defaultStartTimeout,
 		workDir:        defaultWorkDir,
@@ -374,9 +388,10 @@ func (t *Table) snapshotLocked(keep func(State) bool) []Slot {
 
 // Ensure converges the live slot count toward desired. Missing slots are
 // started sequentially; surplus idle/starting slots are stopped (oldest
-// first). It is idempotent: redelivery of the same desired count is a
-// no-op. Busy slots are never stopped. A failed start leaves desired
-// unsatisfied and is retried on the next tick.
+// first), an idle slot only once the idle grace has passed. It is
+// idempotent: redelivery of the same desired count is a no-op. Busy
+// slots are never stopped. A failed start leaves desired unsatisfied and
+// is retried on the next tick.
 func (t *Table) Ensure(ctx context.Context, desired int) error {
 	select {
 	case t.ops <- struct{}{}:
@@ -401,7 +416,24 @@ func (t *Table) Ensure(ctx context.Context, desired int) error {
 			break
 		}
 	}
-	t.stopSurplusContext(ctx, desired)
+	t.stopSurplusContext(ctx, desired, false)
+	return ctx.Err()
+}
+
+// Shutdown stops every eligible slot immediately, bypassing the idle
+// grace: the daemon is going away, so an in-flight assignment can no
+// longer be honored through this table and a freshly idle slot loses its
+// protection. Busy slots are still never stopped — they finish naturally
+// and are adopted from the pool namespace at next boot.
+func (t *Table) Shutdown(ctx context.Context) error {
+	select {
+	case t.ops <- struct{}{}:
+		defer func() { <-t.ops }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	t.retryCleanup(ctx)
+	t.stopSurplusContext(ctx, 0, true)
 	return ctx.Err()
 }
 
@@ -538,10 +570,15 @@ func (t *Table) nextIDLocked() (ID, bool) {
 }
 
 // stopSurplus stops the oldest surplus slots, never busy ones. If the
-// only live slots are busy, nothing is stopped.
-func (t *Table) stopSurplus(desired int) { t.stopSurplusContext(t.ctx, desired) }
+// only live slots are busy, nothing is stopped. Unless ignoreIdleGrace
+// is set (daemon shutdown), a slot that became idle within the idle
+// grace is spared: GitHub may have already assigned it a job whose
+// JobStarted message has not been delivered yet (issue #4).
+func (t *Table) stopSurplus(desired int) {
+	t.stopSurplusContext(t.ctx, desired, false)
+}
 
-func (t *Table) stopSurplusContext(ctx context.Context, desired int) {
+func (t *Table) stopSurplusContext(ctx context.Context, desired int, ignoreIdleGrace bool) {
 	type candidate struct {
 		rec  *slotRec
 		snap Slot
@@ -554,7 +591,13 @@ func (t *Table) stopSurplusContext(ctx context.Context, desired int) {
 		for _, rec := range t.slots {
 			switch rec.State {
 			case StateIdle:
-				// Eligible immediately.
+				// Eligible only once the idle grace has passed: the
+				// JobStarted message for an assignment GitHub already
+				// made can still be in flight.
+				if !ignoreIdleGrace && t.opts.idleGrace > 0 &&
+					!rec.StartedAt.IsZero() && time.Since(rec.StartedAt) <= t.opts.idleGrace {
+					continue
+				}
 			case StateStarting:
 				// Starting slots become eligible only after acquire grace.
 				if t.opts.acquireGrace > 0 && time.Since(rec.provStart) <= t.opts.acquireGrace {

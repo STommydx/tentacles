@@ -302,6 +302,7 @@ strict: an unknown key is a startup error, not a silent no-op.
 | `runtime.slot_stop_timeout` | `30s` | bounds each stop (also `TimeoutStopSec`) |
 | `runtime.cleanup_timeout` | `60s` | bounds diagnostics and wipe; retains ID until worker finishes |
 | `runtime.acquire_grace` | `3m` | see [Scaling semantics](#scaling-semantics) |
+| `runtime.idle_grace` | `30s` | surplus scale-down spares freshly idle runners; see [Scaling semantics](#scaling-semantics) |
 | `runtime.jit_dir` | `/run/tentacles` | tmpfs in production |
 | `observability.listen` | `127.0.0.1:9090` | metrics + `/healthz` |
 | `observability.log_level` | `info` | `debug`, `warn`, `error` also accepted |
@@ -367,8 +368,13 @@ only works after `eval "$(mise activate bash)"`, fix this file instead.
   remaining demand stays queued at GitHub. Adopted busy jobs are preserved
   even when a reduced configuration temporarily leaves the host above its
   ceiling.
-- Scale-down is pool-local and stops the oldest eligible slots: `idle`, or
-  `starting` once past the acquire grace. Busy slots are never stopped.
+- Scale-down is pool-local and stops the oldest eligible slots: `idle` once
+  past the idle grace, or `starting` once past the acquire grace. Busy slots
+  are never stopped. The idle grace (default 30s) covers the window where
+  GitHub has already assigned a job to an idle runner but its `JobStarted`
+  message has not been delivered yet, so surplus scale-down cannot kill a
+  job that never had a chance to run. Daemon shutdown bypasses the idle
+  grace: no further assignment can be honored once tentacles exits.
 - Reconcile runs at boot, on any pool's desired-count message, normal slot
   exits or stops, a 30-second safety tick, and per-pool acquisition retry
   timers. A failing pool backs off without pausing healthy pools.

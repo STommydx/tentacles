@@ -57,6 +57,7 @@ func baseValid(t *testing.T) *Config {
 			SlotStopTimeout:  30 * time.Second,
 			CleanupTimeout:   60 * time.Second,
 			AcquireGrace:     3 * time.Minute,
+			IdleGrace:        30 * time.Second,
 		},
 		Observability: Observability{Listen: "127.0.0.1:9090", LogLevel: "info", ShipDiag: true},
 	}
@@ -143,6 +144,7 @@ func TestValidate(t *testing.T) {
 		{"stop timeout zero", func(c *Config) { c.Runtime.SlotStopTimeout = 0 }, nil, "slot_stop_timeout"},
 		{"cleanup timeout zero", func(c *Config) { c.Runtime.CleanupTimeout = 0 }, nil, "cleanup_timeout"},
 		{"acquire grace zero", func(c *Config) { c.Runtime.AcquireGrace = 0 }, nil, "acquire_grace"},
+		{"idle grace zero", func(c *Config) { c.Runtime.IdleGrace = 0 }, nil, "idle_grace"},
 		{"listen not host:port", func(c *Config) { c.Observability.Listen = "localhost" }, nil, "observability.listen"},
 		{"listen empty", func(c *Config) { c.Observability.Listen = "" }, nil, "observability.listen"},
 		{"log level invalid", func(c *Config) { c.Observability.LogLevel = "verbose" }, nil, "log_level"},
@@ -185,7 +187,7 @@ func TestValidateJoinsAllErrors(t *testing.T) {
 		"max_runners", "pools", "environment_file", "backend",
 		"state_dir", "cache_dir", "log_dir", "job_cpu_quota_percent",
 		"job_memory_max", "slot_start_timeout", "slot_stop_timeout",
-		"cleanup_timeout", "acquire_grace", "observability.listen", "log_level",
+		"cleanup_timeout", "acquire_grace", "idle_grace", "observability.listen", "log_level",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("joined error missing %q:\n%v", want, err)
@@ -240,8 +242,9 @@ runner:
 		t.Errorf("Runtime.JitDir = %q, want /run/tentacles", c.Runtime.JitDir)
 	}
 	if c.Runtime.SlotStartTimeout != 90*time.Second || c.Runtime.SlotStopTimeout != 30*time.Second ||
-		c.Runtime.CleanupTimeout != 60*time.Second || c.Runtime.AcquireGrace != 3*time.Minute {
-		t.Errorf("Runtime timeouts = %+v, want 90s/30s/60s/3m", c.Runtime)
+		c.Runtime.CleanupTimeout != 60*time.Second || c.Runtime.AcquireGrace != 3*time.Minute ||
+		c.Runtime.IdleGrace != 30*time.Second {
+		t.Errorf("Runtime timeouts = %+v, want 90s/30s/60s/3m/30s", c.Runtime)
 	}
 	if c.Observability.Listen != "127.0.0.1:9090" || c.Observability.LogLevel != "info" || !c.Observability.ShipDiag {
 		t.Errorf("Observability = %+v, want 127.0.0.1:9090/info/true", c.Observability)
@@ -290,6 +293,7 @@ runtime:
   slot_stop_timeout: 30s
   cleanup_timeout: 1m
   acquire_grace: 3m
+  idle_grace: 45s
   jit_dir: /tmp/jit
 observability:
   listen: 0.0.0.0:9091
@@ -326,8 +330,9 @@ observability:
 		t.Errorf("Runtime = %+v", c.Runtime)
 	}
 	if c.Runtime.SlotStartTimeout != 90*time.Second || c.Runtime.SlotStopTimeout != 30*time.Second ||
-		c.Runtime.CleanupTimeout != time.Minute || c.Runtime.AcquireGrace != 3*time.Minute {
-		t.Errorf("Runtime timeouts = %+v, want 90s/30s/1m/3m", c.Runtime)
+		c.Runtime.CleanupTimeout != time.Minute || c.Runtime.AcquireGrace != 3*time.Minute ||
+		c.Runtime.IdleGrace != 45*time.Second {
+		t.Errorf("Runtime timeouts = %+v, want 90s/30s/1m/3m/45s", c.Runtime)
 	}
 	if c.Observability.Listen != "0.0.0.0:9091" || c.Observability.LogLevel != "debug" || c.Observability.ShipDiag {
 		t.Errorf("Observability = %+v, want explicit false preserved", c.Observability)

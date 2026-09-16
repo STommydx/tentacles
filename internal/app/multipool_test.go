@@ -134,8 +134,8 @@ func TestSchedulerSharesOneHostSlotAcrossPools(t *testing.T) {
 	}
 	mintedA := 0
 	mintedB := 0
-	poolA := scheduledPool(t, host, "org-a", &mintedA)
-	poolB := scheduledPool(t, host, "org-b", &mintedB)
+	poolA := scheduledPool(t, host, "org-a", &mintedA, slot.WithIdleGrace(0))
+	poolB := scheduledPool(t, host, "org-b", &mintedB, slot.WithIdleGrace(0))
 	host.pools = append(host.pools, poolA, poolB)
 	defer host.close()
 	defer host.shutdownSlots()
@@ -192,6 +192,7 @@ func TestSchedulerRetriesCleanupWithoutDemand(t *testing.T) {
 		"org-a",
 		&minted,
 		slot.WithCleanupTimeout(20*time.Millisecond),
+		slot.WithIdleGrace(0),
 		slot.WithDiagContext(diag),
 	)
 	host.pools = append(host.pools, pool)

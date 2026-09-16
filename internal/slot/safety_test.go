@@ -179,7 +179,7 @@ func TestUncertainFailedStartRetainsFiles(t *testing.T) {
 
 func TestScaleDownHonorsCallerDeadline(t *testing.T) {
 	b := &interleavedBackend{onStop: func(ctx context.Context, _ string) error { <-ctx.Done(); return ctx.Err() }}
-	tab := NewTable(t.TempDir(), b, markerMaterialize, fakeJIT, t.TempDir(), nil, WithStopTimeout(time.Second))
+	tab := NewTable(t.TempDir(), b, markerMaterialize, fakeJIT, t.TempDir(), nil, WithStopTimeout(time.Second), WithIdleGrace(0))
 	defer tab.Close()
 	if err := tab.Ensure(context.Background(), 1); err != nil {
 		t.Fatal(err)

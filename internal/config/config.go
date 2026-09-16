@@ -55,6 +55,7 @@ const (
 	DefaultSlotStopTimeout  = 30 * time.Second
 	DefaultCleanupTimeout   = 60 * time.Second
 	DefaultAcquireGrace     = 3 * time.Minute
+	DefaultIdleGrace        = 30 * time.Second
 )
 
 // MaxCPUQuotaPercent is the upper bound for capacity.job_cpu_quota_percent
@@ -158,6 +159,7 @@ type Runtime struct {
 	SlotStopTimeout  time.Duration `yaml:"slot_stop_timeout"`
 	CleanupTimeout   time.Duration `yaml:"cleanup_timeout"`
 	AcquireGrace     time.Duration `yaml:"acquire_grace"`
+	IdleGrace        time.Duration `yaml:"idle_grace"`
 	JitDir           string        `yaml:"jit_dir"`
 }
 
@@ -316,6 +318,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Runtime.AcquireGrace <= 0 {
 		fail("runtime.acquire_grace must be > 0 (got %s)", c.Runtime.AcquireGrace)
+	}
+	if c.Runtime.IdleGrace <= 0 {
+		fail("runtime.idle_grace must be > 0 (got %s)", c.Runtime.IdleGrace)
 	}
 
 	// Scaling (admission gate). Checked only when the gate is enabled:

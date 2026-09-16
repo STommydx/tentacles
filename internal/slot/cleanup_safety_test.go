@@ -28,7 +28,7 @@ func (h *cleanupGapHandler) Handle(ctx context.Context, r slog.Record) error {
 func TestStopWaitsUntilCleanupWorkerExists(t *testing.T) {
 	h := &cleanupGapHandler{Handler: slog.NewTextHandler(os.Stderr, nil), entered: make(chan struct{}), release: make(chan struct{})}
 	b := &interleavedBackend{}
-	tab := NewTable(t.TempDir(), b, markerMaterialize, fakeJIT, t.TempDir(), slog.New(h))
+	tab := NewTable(t.TempDir(), b, markerMaterialize, fakeJIT, t.TempDir(), slog.New(h), WithIdleGrace(0))
 	defer tab.Close()
 	if err := tab.Ensure(context.Background(), 1); err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func TestFailedCleanupDoesNotRestoreIdle(t *testing.T) {
 	b := &interleavedBackend{}
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
-	tab := NewTable(t.TempDir(), b, markerMaterialize, fakeJIT, t.TempDir(), nil, WithDiagHook(func(Slot) error { entered <- struct{}{}; <-release; return nil }))
+	tab := NewTable(t.TempDir(), b, markerMaterialize, fakeJIT, t.TempDir(), nil, WithDiagHook(func(Slot) error { entered <- struct{}{}; <-release; return nil }), WithIdleGrace(0))
 	defer tab.Close()
 	if err := tab.Ensure(context.Background(), 1); err != nil {
 		t.Fatal(err)
