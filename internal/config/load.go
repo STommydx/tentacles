@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -82,6 +83,9 @@ func applyDefaults(c *Config, disableUpdateSet, shipDiagSet, admissionSet, margi
 	}
 	if !disableUpdateSet {
 		c.Runner.DisableUpdate = true
+	}
+	if len(c.Runner.SharedCachePaths) == 0 {
+		c.Runner.SharedCachePaths = slices.Clone(DefaultSharedCachePaths)
 	}
 
 	if c.Paths.StateDir == "" {

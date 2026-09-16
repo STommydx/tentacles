@@ -39,8 +39,10 @@ RuntimeDirectory=tentacles
 RuntimeDirectoryMode=0700
 # Preserve JIT sources if an in-flight runner must be adopted after restart.
 RuntimeDirectoryPreserve=yes
-# The runner account creates its own caches via a credential-dropped mkdir.
-# Provision these locations before boot; adapt to your runner HOME setting.
+# The daemon creates the runner's shared caches (runner.shared_cache_paths,
+# resolved against the runner env HOME) via a credential-dropped mkdir, so the
+# supervisor needs write access to them. Provision these locations before boot;
+# extend this list whenever shared_cache_paths grows beyond the default.
 ReadWritePaths=-/home/gha-runner/.cache -/home/gha-runner/.local/share/mise -/home/gha-runner/go/pkg/mod
 
 [Install]

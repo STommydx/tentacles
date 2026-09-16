@@ -113,7 +113,8 @@ exit "${FAKE_SYSTEMCTL_EXIT:-0}"
 `
 
 // newTestBackend wires a Backend to fake binaries that log their argv.
-func newTestBackend(t *testing.T) (*Backend, string, string) {
+// Extra Options override the fake-bin defaults field by field.
+func newTestBackend(t *testing.T, opts ...Options) (*Backend, string, string) {
 	t.Helper()
 	binDir := t.TempDir()
 	runLog := filepath.Join(t.TempDir(), "systemd-run.log")
@@ -122,11 +123,32 @@ func newTestBackend(t *testing.T) (*Backend, string, string) {
 	t.Setenv("FAKE_SYSTEMCTL_LOG", ctlLog)
 	runBin := writeFakeBin(t, binDir, "systemd-run", fakeSystemdRun)
 	ctlBin := writeFakeBin(t, binDir, "systemctl", fakeSystemctl)
-	b := New(Options{
+	base := Options{
 		SystemdRunBin: runBin,
 		SystemctlBin:  ctlBin,
 		StopTimeout:   30 * time.Second,
-	})
+	}
+	for _, o := range opts {
+		if o.SystemdRunBin != "" {
+			base.SystemdRunBin = o.SystemdRunBin
+		}
+		if o.SystemctlBin != "" {
+			base.SystemctlBin = o.SystemctlBin
+		}
+		if o.StopTimeout != 0 {
+			base.StopTimeout = o.StopTimeout
+		}
+		if o.CacheSubdirs != nil {
+			base.CacheSubdirs = o.CacheSubdirs
+		}
+		if o.Log != nil {
+			base.Log = o.Log
+		}
+		if o.Namespace != "" {
+			base.Namespace = o.Namespace
+		}
+	}
+	b := New(base)
 	return b, runLog, ctlLog
 }
 
@@ -228,6 +250,33 @@ func TestStartAddsRunnerCacheDirs(t *testing.T) {
 	}
 	if source.Mode().Perm() != 0600 {
 		t.Fatal("JIT source mode changed")
+	}
+}
+
+func TestStartUsesConfiguredCacheSubdirs(t *testing.T) {
+	b, runLog, _ := newTestBackend(t, Options{CacheSubdirs: []string{".npm", ".gradle"}})
+	spec := testStartSpec(t)
+	home := t.TempDir()
+	if err := os.WriteFile(spec.EnvFile, []byte("HOME="+home+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Start(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	log := readLog(t, runLog)
+	for _, sub := range []string{".npm", ".gradle"} {
+		path := filepath.Join(home, sub)
+		if !strings.Contains(log, strconv.Quote(path)) {
+			t.Errorf("cache path %q missing from args", path)
+		}
+		if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
+			t.Errorf("cache dir %s not created: %v", sub, err)
+		}
+	}
+	for _, sub := range runnerCacheSubdirs {
+		if strings.Contains(log, strconv.Quote(filepath.Join(home, sub))) {
+			t.Errorf("default cache path %q leaked into args", sub)
+		}
 	}
 }
 
