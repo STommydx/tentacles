@@ -115,6 +115,41 @@ and `stopping` (stop or cleanup pending). Only `starting`, `idle`, and
 The metrics schema also includes `empty` and `failed`; failed starts are
 cleaned up or retained conservatively rather than kept in `failed`.
 
+### Workflow and toolchain caching
+
+Three cache layers, each with different sharing semantics:
+
+- **GitHub's Actions cache service** (`actions/cache`, `setup-*` with
+  `cache:`) stores caches server-side, scoped to the repository and branch
+  that saved them — not to the runner. Jobs from any pool targeting the same
+  repository share them automatically; ephemeral slots change nothing except
+  that every restore is a network download. Scope rules still apply: restores
+  see the current branch and the default branch, and repository cache storage
+  is bounded (10 GiB, LRU-evicted). On GitHub Enterprise Server the same
+  actions store caches in storage configured for that server.
+- **Host toolchain and package caches** are the warm layer: every job on this
+  host runs as the same UID with the same HOME, so the directories in
+  `runner.shared_cache_paths` (default `~/.cache`, mise state,
+  `~/go/pkg/mod`) persist across jobs and pools with no network traffic.
+  This mirrors how GitHub-hosted runner images ship a pre-populated
+  `/opt/hostedtoolcache` and how Kubernetes runner fleets share a tool-cache
+  volume across ephemeral pods. `RUNNER_TOOL_CACHE` (set by the shipped
+  `runner.env` to `~/.cache/hostedtoolcache`) makes `actions/setup-*` reuse
+  downloaded toolchains the same way.
+- **Workspace-local state** — checkouts, `_work/_tool` without that
+  variable, and everything else inside the slot tree — is destroyed with the
+  slot after one job. Nothing survives between jobs unless it lives in a
+  shared cache path.
+
+Extend `runner.shared_cache_paths` for ecosystems whose caches live outside
+`~/.cache` (`~/.npm` for npm, `~/.m2` and `~/.gradle` for JVM builds,
+`~/.cargo`, `~/.local/share/pnpm`). Without that, `setup-node: cache: npm`
+or `setup-java: cache: gradle` restores into read-only directories and the
+job fails. Concurrent jobs write these directories simultaneously: the Go
+module cache is concurrency-safe by design, pip's and yarn's
+content-addressed stores tolerate it, and mise tool installs should be
+provisioned upfront rather than from parallel jobs.
+
 ## Quickstart
 
 ### 1. GitHub App
@@ -162,7 +197,7 @@ sudo useradd --create-home --shell /bin/bash gha-runner  # once, if absent
 sudo install -d -o root -g root -m 0755 /etc/tentacles /var/lib/tentacles /var/cache/tentacles
 sudo install -d -o root -g root -m 0750 /var/log/tentacles
 sudo install -d -o root -g root -m 0700 /run/tentacles
-sudo -u gha-runner mkdir -p /home/gha-runner/.cache /home/gha-runner/.local/share/mise /home/gha-runner/go/pkg/mod
+sudo -u gha-runner mkdir -p /home/gha-runner/.cache/hostedtoolcache /home/gha-runner/.local/share/mise /home/gha-runner/go/pkg/mod
 ```
 
 `StateDirectory`, `CacheDirectory`, `LogsDirectory`, and `RuntimeDirectory`
@@ -290,6 +325,7 @@ strict: an unknown key is a startup error, not a silent no-op.
 | `runner.download_url` | official release URL | override for mirrors |
 | `runner.sha256` | unset (required when `version` is pinned) | unless `TENTACLES_ALLOW_UNVERIFIED_PAYLOAD=1` |
 | `runner.work_directory` | `_work` | JIT work folder inside the slot |
+| `runner.shared_cache_paths` | `.cache`, `.local/share/mise`, `go/pkg/mod` | HOME-relative shared caches added to each slot's `ReadWritePaths` |
 | `runner.disable_update` | `true` | runner self-update off at scale-set creation |
 | `runner.user` | `gha-runner` | |
 | `runner.group` | account primary group | |
@@ -345,7 +381,15 @@ PATH=/home/gha-runner/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
 HOME=/home/gha-runner
 MISE_DATA_DIR=/home/gha-runner/.local/share/mise
 LANG=C.UTF-8
+RUNNER_TOOL_CACHE=/home/gha-runner/.cache/hostedtoolcache
+AGENT_TOOLSDIRECTORY=/home/gha-runner/.cache/hostedtoolcache
 ```
+
+`RUNNER_TOOL_CACHE`/`AGENT_TOOLSDIRECTORY` keep `setup-*` toolchains under
+the writable shared `~/.cache` instead of the per-job `_work/_tool` default.
+Python toolchains from `actions/python-versions` embed `/opt/hostedtoolcache`
+prefixes; if jobs compile C extensions against them, symlink
+`/opt/hostedtoolcache` to the directory above on the host.
 
 The daemon parses it at startup and refuses to run jobs if `PATH` or
 `HOME` is missing. This is the fix for the classic "systemd does not see
@@ -434,7 +478,9 @@ Then, in both modes:
    skips downloading, hashing, and extraction; it does not revalidate the
    installed tree's contents. Keep the template writable only by root.
 2. Otherwise, download `actions-runner-linux-x64-<ver>.tar.gz` into
-   `paths.cache_dir` if not cached. Downloads are capped at 1 GiB.
+   `paths.cache_dir` if not cached. Downloads are capped at 1 GiB, and
+   tarballs for other versions are evicted so the cache holds at most the
+   current payload archive.
 3. Verify the configured or resolved sha256. A mismatch triggers one
    redownload, then a hard failure; the daemon refuses to start any slot.
 4. Extract into `template.tmp`, sync files and the marker, then promote it
@@ -572,11 +618,12 @@ pool-local slot ID remains reserved until the worker finishes.
   supported manual template units.
 - Shared caches survive the hardening. `ProtectHome=read-only` would
   otherwise make `mise` and Go module caches read-only, which breaks
-  real jobs. The daemon adds `.cache`, `.local/share/mise`, and
-  `go/pkg/mod` under the runner environment's `HOME` to `ReadWritePaths`.
-  It creates missing directories as the runner user and leaves existing
-  ownership unchanged. Pre-create writable caches for that user; the
-  supervisor unit's cache paths must match the configured `HOME`.
+  real jobs. The daemon adds every `runner.shared_cache_paths` entry
+  (defaults: `.cache`, `.local/share/mise`, `go/pkg/mod`) under the runner
+  environment's `HOME` to `ReadWritePaths`. It creates missing directories
+  as the runner user and leaves existing ownership unchanged. Pre-create
+  writable caches for that user; the supervisor unit's cache paths must
+  cover the configured list and `HOME`.
 - The supported service runs the supervisor as root with hardening.
   Slot directories are handed to the configured runner only after a fresh
   payload copy is complete. JIT source files and the template stay owned
@@ -752,9 +799,11 @@ executable systemd smoke test and detailed canary/soak procedure are in
   storage. Use tmpfs for JIT sources and encrypted storage where required.
 - **One job per process.** Each slot tree is scheduled for removal after
   confirmed exit and is never reused for another job.
-- **Shared caches are a residue channel.** `~/.cache`, mise state, and
-  `~/go/pkg/mod` are shared across jobs because that is the point of a
-  shared host. Accepted under the trusted-org constraint.
+- **Shared caches are a residue channel.** The `runner.shared_cache_paths`
+  directories (`~/.cache`, mise state, `~/go/pkg/mod` by default) are shared
+  across jobs because that is the point of a shared host. Accepted under the
+  trusted-org constraint. Concurrent jobs write them simultaneously; only
+  the Go module cache is designed for that, so provision toolchains upfront.
 - **Sequential starts.** Slot creation is serial across all pools; a cold
   scale-up of N slots takes roughly N times one provision.
 

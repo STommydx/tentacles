@@ -354,9 +354,10 @@ func (d *daemon) backendFor(poolID string, opts Options) runner.Backend {
 	}
 	if d.cfg.Runtime.Backend == config.BackendSystemd {
 		return systemd.New(systemd.Options{
-			Log:         d.log.With("pool", poolID).WithGroup("systemd"),
-			StopTimeout: d.cfg.Runtime.SlotStopTimeout,
-			Namespace:   poolID,
+			Log:          d.log.With("pool", poolID).WithGroup("systemd"),
+			StopTimeout:  d.cfg.Runtime.SlotStopTimeout,
+			Namespace:    poolID,
+			CacheSubdirs: d.cfg.Runner.SharedCachePaths,
 		})
 	}
 	return process.New(process.Options{

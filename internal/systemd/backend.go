@@ -40,11 +40,16 @@ type Options struct {
 	StopTimeout time.Duration
 	// Namespace is the configured pool ID embedded in every transient unit.
 	Namespace string
+	// CacheSubdirs are the HOME-relative shared cache directories added to
+	// each unit's ReadWritePaths and pre-created as the runner user before
+	// start. Empty selects the runnerCacheSubdirs default.
+	CacheSubdirs []string
 }
 
-// runnerCacheSubdirs are the HOME-relative shared cache locations jobs
-// may write despite ProtectHome=read-only. These exceptions let the runner
-// use the host's toolchains and shared caches.
+// runnerCacheSubdirs are the default HOME-relative shared cache locations
+// jobs may write despite ProtectHome=read-only. These exceptions let the
+// runner use the host's toolchains and shared caches. Operators extend or
+// replace the list with runner.shared_cache_paths.
 var runnerCacheSubdirs = []string{".cache", ".local/share/mise", "go/pkg/mod"}
 
 // Backend starts, stops, and waits on transient
@@ -56,6 +61,7 @@ type Backend struct {
 	log           *slog.Logger
 	namespace     string
 	stopTimeout   time.Duration
+	cacheSubdirs  []string
 
 	mu      sync.Mutex
 	started map[string]struct{} // units this backend has started
@@ -78,6 +84,10 @@ func New(opts Options) *Backend {
 	if opts.StopTimeout <= 0 {
 		opts.StopTimeout = 30 * time.Second
 	}
+	cacheSubdirs := opts.CacheSubdirs
+	if len(cacheSubdirs) == 0 {
+		cacheSubdirs = runnerCacheSubdirs
+	}
 	namespace := opts.Namespace
 	if namespace == "" {
 		namespace = "default"
@@ -88,6 +98,7 @@ func New(opts Options) *Backend {
 		namespace:     namespace,
 		log:           log,
 		stopTimeout:   opts.StopTimeout,
+		cacheSubdirs:  cacheSubdirs,
 		started:       make(map[string]struct{}),
 	}
 }
@@ -144,7 +155,7 @@ func (b *Backend) Start(ctx context.Context, spec runner.Spec) (retErr error) {
 	if !filepath.IsAbs(home) {
 		return fmt.Errorf("systemd: runner HOME must be absolute")
 	}
-	caches := cachePaths(home)
+	caches := b.cachePaths(home)
 	// Create caches as the job identity: no privileged traversal or chown of
 	// directories a previous job can replace with symlinks.
 	mkdirArgs := append([]string{"-p", "--"}, caches...)
@@ -225,9 +236,9 @@ func quotePath(value string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value) + `"`
 }
 
-func cachePaths(home string) []string {
-	paths := make([]string, 0, len(runnerCacheSubdirs))
-	for _, sub := range runnerCacheSubdirs {
+func (b *Backend) cachePaths(home string) []string {
+	paths := make([]string, 0, len(b.cacheSubdirs))
+	for _, sub := range b.cacheSubdirs {
 		paths = append(paths, filepath.Join(home, sub))
 	}
 	return paths

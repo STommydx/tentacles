@@ -30,6 +30,10 @@ const AllowUnverifiedEnv = "TENTACLES_ALLOW_UNVERIFIED_PAYLOAD"
 const (
 	// cacheFileFmt is the cache file name for a given runner version.
 	cacheFileFmt = "actions-runner-linux-x64-%s.tar.gz"
+	// payloadPrefix identifies cached payload tarballs in cacheDir;
+	// only files with this prefix and a .tar.gz suffix are eviction
+	// candidates. Staging files (.tmp) and unrelated files are left alone.
+	payloadPrefix = "actions-runner-linux-x64-"
 	// markerName identifies a successfully extracted template directory.
 	markerName = ".tentacles-template"
 	// maxDownloadSize caps the tarball body size (1 GiB).
@@ -140,8 +144,9 @@ func DownloadURL(version string) string {
 
 // Ensure makes sure the payload for version is cached, verified, and
 // extracted into the template directory. When the template already matches
-// version+sha256, download and extraction are skipped entirely. An empty
-// sha256 is an error unless AllowUnverifiedEnv is set.
+// version+sha256, download and extraction are skipped entirely. Tarballs
+// for other versions are evicted so cache_dir holds at most the current
+// one. An empty sha256 is an error unless AllowUnverifiedEnv is set.
 func (m *Manager) Ensure(ctx context.Context, version, sha256, downloadURL string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -162,6 +167,8 @@ func (m *Manager) Ensure(ctx context.Context, version, sha256, downloadURL strin
 	if err := checkSHA256(sha256); err != nil {
 		return err
 	}
+	m.evictStaleTarballs(version)
+
 	if m.templateMatches(version, sha256) {
 		m.log.Info("payload template already materialized", "version", version, "template", m.templateDir)
 		return nil
@@ -477,6 +484,33 @@ func (m *Manager) promote(ctx context.Context, staging string) error {
 		}
 	}
 	return nil
+}
+
+// evictStaleTarballs removes payload tarballs for versions other than
+// version, keeping cacheDir to the current version after upgrades. It is
+// best effort: removal failures are logged and never fail Ensure.
+func (m *Manager) evictStaleTarballs(version string) {
+	want := fmt.Sprintf(cacheFileFmt, version)
+	entries, err := os.ReadDir(m.cacheDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			m.log.Warn("payload: scan cache dir for stale tarballs", "dir", m.cacheDir, "error", err)
+		}
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || name == want ||
+			!strings.HasPrefix(name, payloadPrefix) || !strings.HasSuffix(name, ".tar.gz") {
+			continue
+		}
+		path := filepath.Join(m.cacheDir, name)
+		if err := os.Remove(path); err != nil {
+			m.log.Warn("payload: evict stale tarball", "path", path, "error", err)
+			continue
+		}
+		m.log.Info("evicted stale payload tarball", "path", path)
+	}
 }
 
 // extractEntry writes one tar entry under base. Absolute paths and ".."

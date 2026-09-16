@@ -11,7 +11,9 @@ a root supervisor, and a dedicated unprivileged runner user. Startup preflights
 the version because credential delivery uses `--expand-environment=no`.
 The shipped service creates state, payload cache, logs, and private runtime
 directories, including after reboot. Pre-create the runner's shared caches
-and adjust the service writable paths when HOME changes.
+(`runner.shared_cache_paths` plus the `RUNNER_TOOL_CACHE` directory from
+`runner.env`) and keep the service writable paths covering them when HOME or
+the list changes.
 
 Keep configuration, App key, state/cache parent directories, template, logs,
 and JIT source directory controlled by root. Give only fresh slot descendants
@@ -116,7 +118,8 @@ The real GitHub canary, full service cold boot with App credentials, and
    Start from an empty cache/runtime tree and verify `READY=1`, payload
    download/checksum, directory owners, and an idle warm-pool runner.
 2. Run a canary that checks UID, HOME, PATH/mise, working-directory writes,
-   shared caches, and denial of template/App-key/JIT-source reads or writes.
+   shared caches, a `setup-*` tool landing inside `RUNNER_TOOL_CACHE`, and
+   denial of template/App-key/JIT-source reads or writes.
    Confirm exactly one job per runner and private diagnostics after exit.
 3. Queue a burst beyond capacity. Check hard cap, resource reservations,
    admission-hold counter, and eventual service of queued work.

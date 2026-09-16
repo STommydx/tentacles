@@ -55,7 +55,14 @@ runner:
   download_url: ""              # optional override; default GitHub release
   sha256: 70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613  # actions-runner-linux-x64-2.337.0.tar.gz
   work_directory: _work
-  disable_update: true
+  # HOME-relative directories every job may write despite ProtectHome=read-only,
+  # shared (same runner UID and HOME) across all pools' jobs. The default keeps
+  # pip/Go build caches, mise toolchains, and Go modules warm; extend it for
+  # ecosystems whose caches live elsewhere (~/.npm, ~/.m2, ~/.gradle,
+  # ~/.cargo, ~/.local/share/pnpm). The daemon pre-creates them as the runner
+  # user and adds them to each slot unit's ReadWritePaths; mirror any addition
+  # on the supervisor unit's ReadWritePaths so the daemon can create them.
+  shared_cache_paths: [.cache, .local/share/mise, go/pkg/mod]
   user: gha-runner
   group: gha-runner
   environment_file: configs/runner.env.example

@@ -317,6 +317,47 @@ func TestEnsureCachedSkip(t *testing.T) {
 	assertTemplate(t, env.templateDir, fixtureVersion, wantSHA)
 }
 
+func TestEnsureEvictsStaleTarballs(t *testing.T) {
+	env := newTestEnv(t)
+	fixture := fixtureBytes(t)
+	wantSHA := fixtureSHA256(t)
+	srv, hits := fixtureServer(t, fixture)
+
+	if err := env.m.Ensure(t.Context(), fixtureVersion, wantSHA, srv.URL); err != nil {
+		t.Fatalf("Ensure #1: %v", err)
+	}
+
+	stale := filepath.Join(env.cacheDir, "actions-runner-linux-x64-0.0.0.tar.gz")
+	if err := os.WriteFile(stale, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	staging := filepath.Join(env.cacheDir, "actions-runner-linux-x64-9.9.9.tar.gz.1234.tmp")
+	if err := os.WriteFile(staging, []byte("partial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unrelated := filepath.Join(env.cacheDir, "operator-notes.txt")
+	if err := os.WriteFile(unrelated, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The template already matches, so Ensure returns before any download;
+	// eviction must still run on this early-return path.
+	if err := env.m.Ensure(t.Context(), fixtureVersion, wantSHA, srv.URL); err != nil {
+		t.Fatalf("Ensure #2: %v", err)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("server hits = %d, want 1", hits.Load())
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale tarball after Ensure: stat err = %v, want not exist", err)
+	}
+	for _, keep := range []string{cachePath(env), staging, unrelated} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Fatalf("expected %s to survive eviction: %v", keep, err)
+		}
+	}
+}
+
 func TestEnsureShaMismatch(t *testing.T) {
 	env := newTestEnv(t)
 	fixture := fixtureBytes(t)

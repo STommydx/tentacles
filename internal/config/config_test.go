@@ -149,6 +149,12 @@ func TestValidate(t *testing.T) {
 		{"listen empty", func(c *Config) { c.Observability.Listen = "" }, nil, "observability.listen"},
 		{"log level invalid", func(c *Config) { c.Observability.LogLevel = "verbose" }, nil, "log_level"},
 		{"log level empty", func(c *Config) { c.Observability.LogLevel = "" }, nil, "log_level"},
+		{"shared cache path absolute", func(c *Config) { c.Runner.SharedCachePaths = []string{"/opt/npm"} }, nil, `shared_cache_paths[0] "/opt/npm" must be relative`},
+		{"shared cache path escapes home", func(c *Config) { c.Runner.SharedCachePaths = []string{"go/../../etc"} }, nil, "must stay under the runner HOME"},
+		{"shared cache path empty", func(c *Config) { c.Runner.SharedCachePaths = []string{".cache", ""} }, nil, "must name a directory"},
+		{"shared cache path is home itself", func(c *Config) { c.Runner.SharedCachePaths = []string{"."} }, nil, "must name a directory"},
+		{"shared cache path duplicate", func(c *Config) { c.Runner.SharedCachePaths = []string{".cache", ".cache"} }, nil, "duplicates an earlier entry"},
+		{"shared cache paths valid", func(c *Config) { c.Runner.SharedCachePaths = []string{".cache", ".npm", ".local/share/pnpm"} }, nil, ""},
 	}
 
 	for _, tt := range tests {
@@ -232,6 +238,10 @@ runner:
 	if !c.Runner.DisableUpdate {
 		t.Error("Runner.DisableUpdate = false, want default true")
 	}
+	if len(c.Runner.SharedCachePaths) != 3 || c.Runner.SharedCachePaths[0] != ".cache" ||
+		c.Runner.SharedCachePaths[1] != ".local/share/mise" || c.Runner.SharedCachePaths[2] != "go/pkg/mod" {
+		t.Errorf("Runner.SharedCachePaths = %v, want the default three", c.Runner.SharedCachePaths)
+	}
 	if c.Paths.StateDir != "/var/lib/tentacles" || c.Paths.CacheDir != "/var/cache/tentacles" || c.Paths.LogDir != "/var/log/tentacles" {
 		t.Errorf("Paths = %+v, want production directory defaults", c.Paths)
 	}
@@ -282,6 +292,7 @@ runner:
   disable_update: false
   user: some-user
   group: some-group
+  shared_cache_paths: [.npm, .gradle]
   environment_file: /tmp/runner.env
 paths:
   state_dir: /tmp/state
@@ -322,6 +333,9 @@ observability:
 	}
 	if c.Runner.WorkDirectory != "work" || c.Runner.DisableUpdate || c.Runner.User != "some-user" || c.Runner.Group != "some-group" {
 		t.Errorf("Runner = %+v", c.Runner)
+	}
+	if len(c.Runner.SharedCachePaths) != 2 || c.Runner.SharedCachePaths[0] != ".npm" || c.Runner.SharedCachePaths[1] != ".gradle" {
+		t.Errorf("Runner.SharedCachePaths = %v, want [.npm .gradle]", c.Runner.SharedCachePaths)
 	}
 	if c.Paths.StateDir != "/tmp/state" || c.Paths.CacheDir != "/tmp/cache" || c.Paths.LogDir != "/tmp/log" {
 		t.Errorf("Paths = %+v", c.Paths)

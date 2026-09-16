@@ -58,6 +58,13 @@ const (
 	DefaultIdleGrace        = 30 * time.Second
 )
 
+// DefaultSharedCachePaths are the HOME-relative directories every job may
+// write despite ProtectHome=read-only. The XDG cache tree holds pip and
+// Go build caches plus RUNNER_TOOL_CACHE (see the shipped runner.env
+// example); the other two keep mise toolchains and Go modules warm across
+// jobs.
+var DefaultSharedCachePaths = []string{".cache", ".local/share/mise", "go/pkg/mod"}
+
 // MaxCPUQuotaPercent is the upper bound for capacity.job_cpu_quota_percent
 // (systemd CPUQuota accepts a ceiling of 100 * NumCPU; 100*1024 covers any
 // plausible host).
@@ -143,6 +150,12 @@ type Runner struct {
 	User            string `yaml:"user"`
 	Group           string `yaml:"group"` // slot unit group; "" means same as user
 	EnvironmentFile string `yaml:"environment_file"`
+	// SharedCachePaths lists HOME-relative directories shared and writable
+	// by every job on this host despite ProtectHome=read-only. Omitted or
+	// empty selects DefaultSharedCachePaths. Entries must be relative and
+	// stay under the runner HOME; paths outside ~/.cache typically need
+	// matching ReadWritePaths on the supervisor's own unit.
+	SharedCachePaths []string `yaml:"shared_cache_paths"`
 }
 
 // Paths are the daemon's on-disk homes.
@@ -282,6 +295,27 @@ func (c *Config) Validate() error {
 		fail("runner.environment_file %q is not a valid environment file: %v", c.Runner.EnvironmentFile, err)
 	} else if err := env.Validate(vars); err != nil {
 		fail("runner.environment_file %q: %v", c.Runner.EnvironmentFile, err)
+	}
+
+	// Shared cache paths are HOME-relative: the unit resolves them against
+	// the runner environment's HOME at start time.
+	seenCache := make(map[string]bool, len(c.Runner.SharedCachePaths))
+	for i, p := range c.Runner.SharedCachePaths {
+		switch {
+		case p == "" || p == ".":
+			fail("runner.shared_cache_paths[%d] must name a directory under the runner HOME (got %q)", i, p)
+		case filepath.IsAbs(p):
+			fail("runner.shared_cache_paths[%d] %q must be relative to the runner HOME", i, p)
+		}
+		for _, seg := range strings.Split(filepath.ToSlash(p), "/") {
+			if seg == ".." {
+				fail("runner.shared_cache_paths[%d] %q must stay under the runner HOME", i, p)
+			}
+		}
+		if seenCache[p] {
+			fail("runner.shared_cache_paths[%d] %q duplicates an earlier entry", i, p)
+		}
+		seenCache[p] = true
 	}
 
 	// Runtime backend.
