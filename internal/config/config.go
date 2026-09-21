@@ -156,6 +156,13 @@ type Runner struct {
 	// stay under the runner HOME; paths outside ~/.cache typically need
 	// matching ReadWritePaths on the supervisor's own unit.
 	SharedCachePaths []string `yaml:"shared_cache_paths"`
+	// ExtraAddressFamilies lists socket address families added to every slot
+	// unit's RestrictAddressFamilies allowlist on top of the always-present
+	// AF_UNIX, AF_INET, and AF_INET6. Each entry is an AF_ token (for example
+	// AF_NETLINK, which a userspace Tailscale netmon socket opens). Omitted or
+	// empty keeps only the base three. Widen this only when a job genuinely
+	// needs the family: every added family is extra kernel attack surface.
+	ExtraAddressFamilies []string `yaml:"extra_address_families"`
 }
 
 // Paths are the daemon's on-disk homes.
@@ -206,6 +213,10 @@ var (
 	versionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 	// sha256Re matches a 64-character lowercase or uppercase hex digest.
 	sha256Re = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+	// addressFamilyRe matches a systemd RestrictAddressFamilies token: the
+	// AF_ prefix followed by uppercase letters and digits (AF_UNIX, AF_INET6,
+	// AF_NETLINK).
+	addressFamilyRe = regexp.MustCompile(`^AF_[A-Z0-9]+$`)
 )
 
 // systemdRuntimeDir is probed to decide whether the systemd backend is
@@ -316,6 +327,19 @@ func (c *Config) Validate() error {
 			fail("runner.shared_cache_paths[%d] %q duplicates an earlier entry", i, p)
 		}
 		seenCache[p] = true
+	}
+
+	// Extra address families extend the slot unit's RestrictAddressFamilies
+	// allowlist; each must be a well-formed AF_ token.
+	seenFamily := make(map[string]bool, len(c.Runner.ExtraAddressFamilies))
+	for i, f := range c.Runner.ExtraAddressFamilies {
+		if !addressFamilyRe.MatchString(f) {
+			fail("runner.extra_address_families[%d] %q must be an AF_ token like AF_NETLINK", i, f)
+		}
+		if seenFamily[f] {
+			fail("runner.extra_address_families[%d] %q duplicates an earlier entry", i, f)
+		}
+		seenFamily[f] = true
 	}
 
 	// Runtime backend.

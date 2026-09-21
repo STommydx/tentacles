@@ -63,6 +63,12 @@ runner:
   # user and adds them to each slot unit's ReadWritePaths; mirror any addition
   # on the supervisor unit's ReadWritePaths so the daemon can create them.
   shared_cache_paths: [.cache, .local/share/mise, go/pkg/mod]
+  # Socket address families added to every slot unit's RestrictAddressFamilies
+  # allowlist, on top of the always-present AF_UNIX, AF_INET, and AF_INET6.
+  # Leave empty to keep only those three. Add a family only when a job needs it,
+  # for example AF_NETLINK for a userspace Tailscale netmon socket; each entry
+  # is extra kernel attack surface.
+  # extra_address_families: [AF_NETLINK]
   user: gha-runner
   group: gha-runner
   environment_file: configs/runner.env.example

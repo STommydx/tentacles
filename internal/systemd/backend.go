@@ -44,6 +44,11 @@ type Options struct {
 	// each unit's ReadWritePaths and pre-created as the runner user before
 	// start. Empty selects the runnerCacheSubdirs default.
 	CacheSubdirs []string
+	// ExtraAddressFamilies are socket address families added to each slot
+	// unit's RestrictAddressFamilies allowlist on top of baseAddressFamilies.
+	// Empty keeps the base three. Each entry is an AF_ token (for example
+	// AF_NETLINK, needed by a userspace Tailscale netmon socket).
+	ExtraAddressFamilies []string
 }
 
 // runnerCacheSubdirs are the default HOME-relative shared cache locations
@@ -52,16 +57,25 @@ type Options struct {
 // replace the list with runner.shared_cache_paths.
 var runnerCacheSubdirs = []string{".cache", ".local/share/mise", "go/pkg/mod"}
 
+// baseAddressFamilies is the socket address-family allowlist every slot unit
+// carries in RestrictAddressFamilies. AF_UNIX, AF_INET, and AF_INET6 cover
+// local IPC and IPv4/IPv6 networking, which any job needs; the rest of the
+// kernel's families stay unreachable as attack-surface reduction. Operators
+// add a family with runner.extra_address_families rather than editing this
+// list.
+var baseAddressFamilies = []string{"AF_UNIX", "AF_INET", "AF_INET6"}
+
 // Backend starts, stops, and waits on transient
 // tentacle-<pool>-<id>.service units. All methods are safe for concurrent
 // use.
 type Backend struct {
-	systemdRunBin string
-	systemctlBin  string
-	log           *slog.Logger
-	namespace     string
-	stopTimeout   time.Duration
-	cacheSubdirs  []string
+	systemdRunBin        string
+	systemctlBin         string
+	log                  *slog.Logger
+	namespace            string
+	stopTimeout          time.Duration
+	cacheSubdirs         []string
+	extraAddressFamilies []string
 
 	mu      sync.Mutex
 	started map[string]struct{} // units this backend has started
@@ -93,13 +107,14 @@ func New(opts Options) *Backend {
 		namespace = "default"
 	}
 	return &Backend{
-		systemdRunBin: runBin,
-		systemctlBin:  ctlBin,
-		namespace:     namespace,
-		log:           log,
-		stopTimeout:   opts.StopTimeout,
-		cacheSubdirs:  cacheSubdirs,
-		started:       make(map[string]struct{}),
+		systemdRunBin:        runBin,
+		systemctlBin:         ctlBin,
+		namespace:            namespace,
+		log:                  log,
+		stopTimeout:          opts.StopTimeout,
+		cacheSubdirs:         cacheSubdirs,
+		extraAddressFamilies: opts.ExtraAddressFamilies,
+		started:              make(map[string]struct{}),
 	}
 }
 
@@ -222,7 +237,7 @@ func (b *Backend) startArgs(spec runner.Spec, caches ...string) []string {
 		"-p", "ProtectSystem=strict",
 		"-p", "ProtectHome=read-only",
 		"-p", "ReadWritePaths="+strings.Join(paths, " "),
-		"-p", "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+		"-p", "RestrictAddressFamilies="+addressFamilies(b.extraAddressFamilies),
 		"-p", "LockPersonality=yes",
 		"/bin/sh", "-c", runner.CredentialScript(),
 	)
@@ -234,6 +249,19 @@ func (b *Backend) startArgs(spec runner.Spec, caches ...string) []string {
 // the actual pathname. The list parser unquotes but does not decode C escapes.
 func quotePath(value string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value) + `"`
+}
+
+// addressFamilies renders the RestrictAddressFamilies value: the base
+// allowlist followed by any configured extras, in order and deduplicated so a
+// configured base family does not repeat.
+func addressFamilies(extra []string) string {
+	families := append([]string{}, baseAddressFamilies...)
+	for _, f := range extra {
+		if !slices.Contains(families, f) {
+			families = append(families, f)
+		}
+	}
+	return strings.Join(families, " ")
 }
 
 func (b *Backend) cachePaths(home string) []string {
