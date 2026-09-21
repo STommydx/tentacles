@@ -58,9 +58,6 @@ type Options struct {
 	JobHome string
 }
 
-// jobHomeSubdir is the slot-relative directory bound over Options.JobHome.
-const jobHomeSubdir = "home"
-
 // runnerCacheSubdirs are the default HOME-relative shared cache locations
 // jobs may write despite ProtectHome=read-only. These exceptions let the
 // runner use the host's toolchains and shared caches. Operators extend or
@@ -193,9 +190,13 @@ func (b *Backend) Start(ctx context.Context, spec runner.Spec) (retErr error) {
 	}
 	if b.jobHome != "" {
 		// Mkdir, not MkdirAll: an existing entry means the tree is not the
-		// fresh supervisor-owned slot PrepareSlot is about to hand over, and
-		// a planted symlink here would choose the bind-mount source.
-		if err := os.Mkdir(filepath.Join(spec.SlotDir, jobHomeSubdir), 0o700); err != nil {
+		// fresh supervisor-owned slot PrepareSlot is about to hand over, so
+		// refuse to bind whatever is there. This covers entries present
+		// before the handover only. Afterwards the directory belongs to the
+		// runner user like the rest of the slot; a bind mount grants no
+		// access beyond its source's own ownership, so that stays inside the
+		// shared-UID trust model.
+		if err := os.Mkdir(filepath.Join(spec.SlotDir, runner.JobHomeSubdir), 0o700); err != nil {
 			return fmt.Errorf("systemd: prepare job home: %w", err)
 		}
 	}
@@ -263,9 +264,11 @@ func (b *Backend) startArgs(spec runner.Spec, caches ...string) []string {
 	)
 	if b.jobHome != "" {
 		// The slot's own home appears at one fixed path in every job's mount
-		// namespace. Listing the mount point in ReadWritePaths above keeps it
-		// writable under ProtectSystem=strict.
-		source := filepath.Join(spec.SlotDir, jobHomeSubdir)
+		// namespace. BindPaths= mounts are writable by themselves under
+		// ProtectSystem=strict (checked on systemd 257); the mount point is
+		// in ReadWritePaths above as well so that does not rest on one
+		// property.
+		source := filepath.Join(spec.SlotDir, runner.JobHomeSubdir)
 		args = append(args, "-p", "BindPaths="+quotePath(source)+":"+quotePath(b.jobHome))
 	}
 	args = append(args,

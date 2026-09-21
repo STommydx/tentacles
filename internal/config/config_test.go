@@ -63,6 +63,14 @@ func baseValid(t *testing.T) *Config {
 	}
 }
 
+// jobHomeDir creates and returns a mount point next to, not above, the
+// state dir that baseValid placed in the same temp directory.
+func jobHomeDir(c *Config) string {
+	dir := filepath.Join(filepath.Dir(c.Runner.EnvironmentFile), "job-home")
+	_ = os.MkdirAll(dir, 0o755)
+	return dir
+}
+
 // writeConfig writes body to a temp file and returns its path.
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
@@ -161,17 +169,30 @@ func TestValidate(t *testing.T) {
 		{"extra address families valid", func(c *Config) { c.Runner.ExtraAddressFamilies = []string{"AF_NETLINK", "AF_PACKET"} }, nil, ""},
 		{"job home valid", func(c *Config) {
 			c.Runtime.Backend = "systemd"
-			c.Runner.JobHome = filepath.Dir(c.Runner.EnvironmentFile) // an existing directory
+			c.Runner.JobHome = jobHomeDir(c)
 		}, systemdDirPresent, ""},
-		{"job home needs systemd backend", func(c *Config) { c.Runner.JobHome = filepath.Dir(c.Runner.EnvironmentFile) }, nil, `runner.job_home requires runtime.backend "systemd"`},
+		{"job home needs systemd backend", func(c *Config) { c.Runner.JobHome = jobHomeDir(c) }, nil, `runner.job_home requires runtime.backend "systemd"`},
 		{"job home relative", func(c *Config) { c.Runner.JobHome = "srv/job-home" }, nil, "must be a clean absolute path"},
 		{"job home unclean", func(c *Config) { c.Runner.JobHome = "/srv/../srv/job-home" }, nil, "must be a clean absolute path"},
 		{"job home is root", func(c *Config) { c.Runner.JobHome = "/" }, nil, "must be a clean absolute path"},
 		{"job home contains colon", func(c *Config) { c.Runner.JobHome = "/srv/job:home" }, nil, "must not contain ':'"},
-		{"job home is the env HOME", func(c *Config) { c.Runner.JobHome = "/home/gha-runner" }, nil, "must not be or contain the environment file's HOME"},
-		{"job home contains the env HOME", func(c *Config) { c.Runner.JobHome = "/home" }, nil, "must not be or contain the environment file's HOME"},
-		{"job home missing", func(c *Config) { c.Runner.JobHome = filepath.Join(filepath.Dir(c.Runner.EnvironmentFile), "missing") }, nil, "must exist as the mount point"},
+		{"job home is the env HOME", func(c *Config) { c.Runner.JobHome = "/home/gha-runner" }, nil, "must not overlap the environment file's HOME"},
+		{"job home contains the env HOME", func(c *Config) { c.Runner.JobHome = "/home" }, nil, "must not overlap the environment file's HOME"},
+		{"job home inside the env HOME", func(c *Config) { c.Runner.JobHome = "/home/gha-runner/.cache" }, nil, "must not overlap the environment file's HOME"},
+		{"job home is the state dir", func(c *Config) { c.Runner.JobHome = c.Paths.StateDir }, nil, "must not overlap paths.state_dir"},
+		{"job home contains the state dir", func(c *Config) { c.Runner.JobHome = filepath.Dir(c.Paths.StateDir) }, nil, "must not overlap paths.state_dir"},
+		{"job home inside the state dir", func(c *Config) { c.Runner.JobHome = filepath.Join(c.Paths.StateDir, "pools") }, nil, "must not overlap paths.state_dir"},
+		{"job home missing", func(c *Config) { c.Runner.JobHome = jobHomeDir(c) + "-missing" }, nil, "must exist as the mount point"},
 		{"job home not a directory", func(c *Config) { c.Runner.JobHome = c.Runner.EnvironmentFile }, nil, "must be a directory"},
+		{"work directory is the job home source", func(c *Config) {
+			c.Runner.JobHome = jobHomeDir(c)
+			c.Runner.WorkDirectory = "home"
+		}, nil, `runner.work_directory "home" must not be or sit under "home"`},
+		{"work directory under the job home source", func(c *Config) {
+			c.Runner.JobHome = jobHomeDir(c)
+			c.Runner.WorkDirectory = "home/work"
+		}, nil, `runner.work_directory "home/work" must not be or sit under "home"`},
+		{"work directory named home without job home", func(c *Config) { c.Runner.WorkDirectory = "home" }, nil, ""},
 	}
 
 	for _, tt := range tests {

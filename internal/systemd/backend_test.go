@@ -294,7 +294,7 @@ func TestStartCreatesJobHome(t *testing.T) {
 	if err := b.Start(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	fi, err := os.Lstat(filepath.Join(spec.SlotDir, jobHomeSubdir))
+	fi, err := os.Lstat(filepath.Join(spec.SlotDir, runner.JobHomeSubdir))
 	if err != nil || !fi.IsDir() {
 		t.Fatalf("job home not created as a directory: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestStartCreatesJobHome(t *testing.T) {
 func TestStartRejectsExistingJobHome(t *testing.T) {
 	b, runLog, _ := newTestBackend(t, Options{JobHome: t.TempDir()})
 	spec := testStartSpec(t)
-	if err := os.Symlink(t.TempDir(), filepath.Join(spec.SlotDir, jobHomeSubdir)); err != nil {
+	if err := os.Symlink(t.TempDir(), filepath.Join(spec.SlotDir, runner.JobHomeSubdir)); err != nil {
 		t.Fatal(err)
 	}
 	err := b.Start(context.Background(), spec)

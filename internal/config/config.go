@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/0xinterface/tentacles/internal/env"
+	"github.com/0xinterface/tentacles/internal/runner"
 )
 
 // HardCapMaxRunners is the compiled ceiling for capacity.max_runners.
@@ -351,16 +352,22 @@ func (c *Config) Validate() error {
 		}
 		seenFamily[f] = true
 	}
-	// The per-job HOME is a bind mount inside each slot unit's namespace.
+	// The per-job HOME is a bind mount inside each slot unit's namespace. A
+	// mount hides whatever lies beneath its mount point, so the mount point
+	// must be disjoint from every path a job still needs to reach.
 	if home := c.Runner.JobHome; home != "" {
-		switch {
-		case !filepath.IsAbs(home) || filepath.Clean(home) != home || home == "/":
+		if !filepath.IsAbs(home) || filepath.Clean(home) != home || home == "/" {
 			fail("runner.job_home %q must be a clean absolute path other than /", home)
-		case strings.Contains(home, ":") || strings.Contains(c.Paths.StateDir, ":"):
-			fail("runner.job_home %q and paths.state_dir must not contain ':', the BindPaths separator", home)
-		case envHome != "" && pathContains(home, filepath.Clean(envHome)):
-			fail("runner.job_home %q must not be or contain the environment file's HOME %q: the mount would hide the shared caches", home, envHome)
-		default:
+		} else {
+			if strings.Contains(home, ":") || strings.Contains(c.Paths.StateDir, ":") {
+				fail("runner.job_home %q and paths.state_dir must not contain ':', the BindPaths separator", home)
+			}
+			if filepath.IsAbs(envHome) && pathsOverlap(home, filepath.Clean(envHome)) {
+				fail("runner.job_home %q must not overlap the environment file's HOME %q: the mount would hide the account's home or a shared cache", home, envHome)
+			}
+			if filepath.IsAbs(c.Paths.StateDir) && pathsOverlap(home, filepath.Clean(c.Paths.StateDir)) {
+				fail("runner.job_home %q must not overlap paths.state_dir %q: the mount would hide the slot directories", home, c.Paths.StateDir)
+			}
 			if fi, err := os.Stat(home); err != nil {
 				fail("runner.job_home %q must exist as the mount point: %v", home, err)
 			} else if !fi.IsDir() {
@@ -369,6 +376,9 @@ func (c *Config) Validate() error {
 		}
 		if c.Runtime.Backend != BackendSystemd {
 			fail("runner.job_home requires runtime.backend %q: the process backend has no mount namespace", BackendSystemd)
+		}
+		if work := filepath.Clean(c.Runner.WorkDirectory); pathContains(runner.JobHomeSubdir, work) {
+			fail("runner.work_directory %q must not be or sit under %q when runner.job_home is set: the workspace would move into the per-job HOME mount", c.Runner.WorkDirectory, runner.JobHomeSubdir)
 		}
 	}
 
@@ -599,8 +609,13 @@ func probeWritable(dir string) error {
 	return os.Remove(name)
 }
 
+// pathsOverlap reports whether either path is the other or lies beneath it.
+func pathsOverlap(a, b string) bool {
+	return pathContains(a, b) || pathContains(b, a)
+}
+
 // pathContains reports whether child is parent or lies beneath it. Both must
-// be clean absolute paths.
+// be clean, and both absolute or both relative.
 func pathContains(parent, child string) bool {
 	rel, err := filepath.Rel(parent, child)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))

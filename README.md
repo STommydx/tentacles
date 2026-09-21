@@ -171,8 +171,11 @@ every slot, so nothing a job caches can record a slot-specific `HOME`.
   `GOMODCACHE`, `RUNNER_TOOL_CACHE`, ...), since `~/.cache` now resolves
   inside the per-job home. Files provisioned in the account's home are not
   visible under the new `HOME`; address them by absolute path as well.
-- `runner.job_home` must not be or contain the `HOME` from `runner.env`: the
-  mount would hide the shared caches.
+- A mount hides whatever lies beneath its mount point, so `runner.job_home`
+  must not overlap the `HOME` from `runner.env` (it would hide the account's
+  home or a shared cache) or `paths.state_dir` (it would hide the slot
+  directories), in either direction. `runner.work_directory` must not be
+  `home` or sit under it, which would move the workspace into the mount.
 - The mount exists only inside the slot unit. A Docker daemon on the host
   resolves `docker run -v "$HOME/...":...` against the host path, which is the
   empty mount point. Mount from the workspace instead.
@@ -394,8 +397,8 @@ settings. The sum of pool floors must fit `capacity.max_runners`. Validation
 also checks every key path, parses the runner environment file, requires
 non-empty `PATH` and `HOME`, and checks for `/run/systemd/system` when the
 systemd backend is selected. A configured `runner.job_home` must be a clean
-absolute path to an existing directory that is not, and does not contain,
-the environment file's `HOME`.
+absolute path to an existing directory that overlaps neither the environment
+file's `HOME` nor `paths.state_dir`.
 
 `--dry-run` stops there. Normal startup also creates and probes the shared and
 pool-qualified daemon directories, resolves the runner identity, prepares the
