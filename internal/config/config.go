@@ -163,6 +163,13 @@ type Runner struct {
 	// empty keeps only the base three. Widen this only when a job genuinely
 	// needs the family: every added family is extra kernel attack surface.
 	ExtraAddressFamilies []string `yaml:"extra_address_families"`
+	// JobHome is an absolute, existing directory that every job sees as its
+	// own HOME: each slot's fresh <slot>/home is bind-mounted over it, so
+	// HOME is writable, private to the job, removed with the slot, and the
+	// same path in every slot. The environment file's HOME then only anchors
+	// SharedCachePaths. Empty (the default) leaves jobs on the environment
+	// file's read-only HOME. Requires the systemd backend.
+	JobHome string `yaml:"job_home"`
 }
 
 // Paths are the daemon's on-disk homes.
@@ -298,6 +305,7 @@ func (c *Config) Validate() error {
 			fail("runner.sha256 must be a 64-character hex digest (got %d characters); set %s=1 to allow an unverified payload", len(c.Runner.SHA256), AllowUnverifiedPayloadEnv)
 		}
 	}
+	envHome := ""
 	if c.Runner.EnvironmentFile == "" {
 		fail("runner.environment_file must not be empty")
 	} else if _, err := os.Stat(c.Runner.EnvironmentFile); err != nil {
@@ -306,6 +314,8 @@ func (c *Config) Validate() error {
 		fail("runner.environment_file %q is not a valid environment file: %v", c.Runner.EnvironmentFile, err)
 	} else if err := env.Validate(vars); err != nil {
 		fail("runner.environment_file %q: %v", c.Runner.EnvironmentFile, err)
+	} else {
+		envHome = vars["HOME"]
 	}
 
 	// Shared cache paths are HOME-relative: the unit resolves them against
@@ -340,6 +350,26 @@ func (c *Config) Validate() error {
 			fail("runner.extra_address_families[%d] %q duplicates an earlier entry", i, f)
 		}
 		seenFamily[f] = true
+	}
+	// The per-job HOME is a bind mount inside each slot unit's namespace.
+	if home := c.Runner.JobHome; home != "" {
+		switch {
+		case !filepath.IsAbs(home) || filepath.Clean(home) != home || home == "/":
+			fail("runner.job_home %q must be a clean absolute path other than /", home)
+		case strings.Contains(home, ":") || strings.Contains(c.Paths.StateDir, ":"):
+			fail("runner.job_home %q and paths.state_dir must not contain ':', the BindPaths separator", home)
+		case envHome != "" && pathContains(home, filepath.Clean(envHome)):
+			fail("runner.job_home %q must not be or contain the environment file's HOME %q: the mount would hide the shared caches", home, envHome)
+		default:
+			if fi, err := os.Stat(home); err != nil {
+				fail("runner.job_home %q must exist as the mount point: %v", home, err)
+			} else if !fi.IsDir() {
+				fail("runner.job_home %q must be a directory", home)
+			}
+		}
+		if c.Runtime.Backend != BackendSystemd {
+			fail("runner.job_home requires runtime.backend %q: the process backend has no mount namespace", BackendSystemd)
+		}
 	}
 
 	// Runtime backend.
@@ -567,4 +597,11 @@ func probeWritable(dir string) error {
 	name := f.Name()
 	_ = f.Close()
 	return os.Remove(name)
+}
+
+// pathContains reports whether child is parent or lies beneath it. Both must
+// be clean absolute paths.
+func pathContains(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

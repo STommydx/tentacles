@@ -359,6 +359,7 @@ func (d *daemon) backendFor(poolID string, opts Options) runner.Backend {
 			Namespace:            poolID,
 			CacheSubdirs:         d.cfg.Runner.SharedCachePaths,
 			ExtraAddressFamilies: d.cfg.Runner.ExtraAddressFamilies,
+			JobHome:              d.cfg.Runner.JobHome,
 		})
 	}
 	return process.New(process.Options{

@@ -159,6 +159,19 @@ func TestValidate(t *testing.T) {
 		{"extra address family lowercase", func(c *Config) { c.Runner.ExtraAddressFamilies = []string{"AF_netlink"} }, nil, "must be an AF_ token"},
 		{"extra address family duplicate", func(c *Config) { c.Runner.ExtraAddressFamilies = []string{"AF_NETLINK", "AF_NETLINK"} }, nil, "duplicates an earlier entry"},
 		{"extra address families valid", func(c *Config) { c.Runner.ExtraAddressFamilies = []string{"AF_NETLINK", "AF_PACKET"} }, nil, ""},
+		{"job home valid", func(c *Config) {
+			c.Runtime.Backend = "systemd"
+			c.Runner.JobHome = filepath.Dir(c.Runner.EnvironmentFile) // an existing directory
+		}, systemdDirPresent, ""},
+		{"job home needs systemd backend", func(c *Config) { c.Runner.JobHome = filepath.Dir(c.Runner.EnvironmentFile) }, nil, `runner.job_home requires runtime.backend "systemd"`},
+		{"job home relative", func(c *Config) { c.Runner.JobHome = "srv/job-home" }, nil, "must be a clean absolute path"},
+		{"job home unclean", func(c *Config) { c.Runner.JobHome = "/srv/../srv/job-home" }, nil, "must be a clean absolute path"},
+		{"job home is root", func(c *Config) { c.Runner.JobHome = "/" }, nil, "must be a clean absolute path"},
+		{"job home contains colon", func(c *Config) { c.Runner.JobHome = "/srv/job:home" }, nil, "must not contain ':'"},
+		{"job home is the env HOME", func(c *Config) { c.Runner.JobHome = "/home/gha-runner" }, nil, "must not be or contain the environment file's HOME"},
+		{"job home contains the env HOME", func(c *Config) { c.Runner.JobHome = "/home" }, nil, "must not be or contain the environment file's HOME"},
+		{"job home missing", func(c *Config) { c.Runner.JobHome = filepath.Join(filepath.Dir(c.Runner.EnvironmentFile), "missing") }, nil, "must exist as the mount point"},
+		{"job home not a directory", func(c *Config) { c.Runner.JobHome = c.Runner.EnvironmentFile }, nil, "must be a directory"},
 	}
 
 	for _, tt := range tests {
@@ -301,6 +314,7 @@ runner:
   group: some-group
   shared_cache_paths: [.npm, .gradle]
   extra_address_families: [AF_NETLINK]
+  job_home: /srv/job-home
   environment_file: /tmp/runner.env
 paths:
   state_dir: /tmp/state
@@ -347,6 +361,9 @@ observability:
 	}
 	if len(c.Runner.ExtraAddressFamilies) != 1 || c.Runner.ExtraAddressFamilies[0] != "AF_NETLINK" {
 		t.Errorf("Runner.ExtraAddressFamilies = %v, want [AF_NETLINK]", c.Runner.ExtraAddressFamilies)
+	}
+	if c.Runner.JobHome != "/srv/job-home" {
+		t.Errorf("Runner.JobHome = %q, want /srv/job-home", c.Runner.JobHome)
 	}
 	if c.Paths.StateDir != "/tmp/state" || c.Paths.CacheDir != "/tmp/cache" || c.Paths.LogDir != "/tmp/log" {
 		t.Errorf("Paths = %+v", c.Paths)

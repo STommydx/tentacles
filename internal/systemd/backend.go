@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -49,7 +50,16 @@ type Options struct {
 	// Empty keeps the base three. Each entry is an AF_ token (for example
 	// AF_NETLINK, needed by a userspace Tailscale netmon socket).
 	ExtraAddressFamilies []string
+	// JobHome is the absolute mount point every job sees as its own HOME.
+	// When set, each slot gets a fresh <slot>/home bound over it, so HOME is
+	// writable, private to the job, removed with the slot, and the same path
+	// in every slot. The environment file's HOME then only anchors the
+	// shared caches. Empty keeps the environment file's HOME for jobs.
+	JobHome string
 }
+
+// jobHomeSubdir is the slot-relative directory bound over Options.JobHome.
+const jobHomeSubdir = "home"
 
 // runnerCacheSubdirs are the default HOME-relative shared cache locations
 // jobs may write despite ProtectHome=read-only. These exceptions let the
@@ -76,6 +86,7 @@ type Backend struct {
 	stopTimeout          time.Duration
 	cacheSubdirs         []string
 	extraAddressFamilies []string
+	jobHome              string
 
 	mu      sync.Mutex
 	started map[string]struct{} // units this backend has started
@@ -114,6 +125,7 @@ func New(opts Options) *Backend {
 		stopTimeout:          opts.StopTimeout,
 		cacheSubdirs:         cacheSubdirs,
 		extraAddressFamilies: opts.ExtraAddressFamilies,
+		jobHome:              opts.JobHome,
 		started:              make(map[string]struct{}),
 	}
 }
@@ -179,6 +191,14 @@ func (b *Backend) Start(ctx context.Context, spec runner.Spec) (retErr error) {
 	if out, err := mkdir.CombinedOutput(); err != nil {
 		return fmt.Errorf("systemd: prepare runner caches: %w: %s", err, tail(out))
 	}
+	if b.jobHome != "" {
+		// Mkdir, not MkdirAll: an existing entry means the tree is not the
+		// fresh supervisor-owned slot PrepareSlot is about to hand over, and
+		// a planted symlink here would choose the bind-mount source.
+		if err := os.Mkdir(filepath.Join(spec.SlotDir, jobHomeSubdir), 0o700); err != nil {
+			return fmt.Errorf("systemd: prepare job home: %w", err)
+		}
+	}
 	if err := runner.PrepareSlot(ctx, spec, identity); err != nil {
 		return err
 	}
@@ -222,6 +242,9 @@ func (b *Backend) startArgs(spec runner.Spec, caches ...string) []string {
 	addProp("CPUQuota", spec.CPUQuota)
 	addProp("MemoryMax", spec.MemoryMax)
 	paths := append([]string{spec.SlotDir, "/tmp"}, caches...)
+	if b.jobHome != "" {
+		paths = append(paths, b.jobHome)
+	}
 	for i, path := range paths {
 		paths[i] = quotePath(path)
 	}
@@ -237,11 +260,22 @@ func (b *Backend) startArgs(spec runner.Spec, caches ...string) []string {
 		"-p", "ProtectSystem=strict",
 		"-p", "ProtectHome=read-only",
 		"-p", "ReadWritePaths="+strings.Join(paths, " "),
+	)
+	if b.jobHome != "" {
+		// The slot's own home appears at one fixed path in every job's mount
+		// namespace. Listing the mount point in ReadWritePaths above keeps it
+		// writable under ProtectSystem=strict.
+		source := filepath.Join(spec.SlotDir, jobHomeSubdir)
+		args = append(args, "-p", "BindPaths="+quotePath(source)+":"+quotePath(b.jobHome))
+	}
+	args = append(args,
 		"-p", "RestrictAddressFamilies="+addressFamilies(b.extraAddressFamilies),
 		"-p", "LockPersonality=yes",
-		"/bin/sh", "-c", runner.CredentialScript(),
 	)
-	return args
+	if b.jobHome != "" {
+		return append(args, "/bin/sh", "-c", runner.CredentialScriptWithHome(), "sh", b.jobHome)
+	}
+	return append(args, "/bin/sh", "-c", runner.CredentialScript())
 }
 
 // systemd-run passes literal path values over D-Bus; systemd itself escapes

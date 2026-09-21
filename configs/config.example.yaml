@@ -69,6 +69,13 @@ runner:
   # for example AF_NETLINK for a userspace Tailscale netmon socket; each entry
   # is extra kernel attack surface.
   # extra_address_families: [AF_NETLINK]
+  # Optional per-job HOME (systemd backend). Each slot's fresh <slot>/home is
+  # bind-mounted over this existing directory, so jobs get a writable HOME
+  # that is private, removed with the slot, and the same path in every slot.
+  # HOME in runner.env then only anchors shared_cache_paths; keep cache
+  # variables there absolute. Create the mount point once: install -d -m 0755
+  # /var/lib/tentacles-job-home
+  # job_home: /var/lib/tentacles-job-home
   user: gha-runner
   group: gha-runner
   environment_file: configs/runner.env.example

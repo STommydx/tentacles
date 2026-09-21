@@ -20,6 +20,14 @@ func CredentialScript() string {
 	return `jit=$(cat "$CREDENTIALS_DIRECTORY/jit") || exit; exec ./run.sh --jitconfig "$jit"`
 }
 
+// CredentialScriptWithHome is CredentialScript for a slot with a per-job
+// HOME, passed as the first positional argument. systemd applies
+// EnvironmentFile= after Environment=, so a unit property cannot replace the
+// HOME the environment file sets; the shell can.
+func CredentialScriptWithHome() string {
+	return `HOME=$1; export HOME; ` + CredentialScript()
+}
+
 // BuildCommand keeps paths out of shell source and secrets out of the
 // supervisor's command line. The runner itself requires --jitconfig on argv.
 func BuildCommand(spec Spec) *exec.Cmd {

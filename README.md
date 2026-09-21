@@ -150,6 +150,38 @@ module cache is concurrency-safe by design, pip's and yarn's
 content-addressed stores tolerate it, and mise tool installs should be
 provisioned upfront rather than from parallel jobs.
 
+### Per-job HOME
+
+By default a job's `HOME` is the runner account's home from `runner.env`,
+read-only except for the shared cache paths. Tools that write a fixed path
+under `HOME` with no environment override (an installer's `$HOME/.tool`, for
+example) then fail with "Read-only file system", and each one needs its own
+workaround.
+
+Set `runner.job_home` to an absolute directory, created once by the operator,
+to give every job a writable `HOME` instead. For each slot the daemon creates
+`<slot>/home`, bind-mounts it over `runner.job_home` inside the slot unit's
+mount namespace, and starts the runner with `HOME` set to that path. The
+directory is private to the job, deleted with the slot, and the same path in
+every slot, so nothing a job caches can record a slot-specific `HOME`.
+
+- `HOME` in `runner.env` stays required. It no longer reaches jobs; it anchors
+  `runner.shared_cache_paths`, and the account's home stays read-only. Point
+  caches there with absolute paths in `runner.env` (`XDG_CACHE_HOME`,
+  `GOMODCACHE`, `RUNNER_TOOL_CACHE`, ...), since `~/.cache` now resolves
+  inside the per-job home. Files provisioned in the account's home are not
+  visible under the new `HOME`; address them by absolute path as well.
+- `runner.job_home` must not be or contain the `HOME` from `runner.env`: the
+  mount would hide the shared caches.
+- The mount exists only inside the slot unit. A Docker daemon on the host
+  resolves `docker run -v "$HOME/...":...` against the host path, which is the
+  empty mount point. Mount from the workspace instead.
+- Programs that read the passwd entry instead of `$HOME` (OpenSSH, the JVM's
+  `user.home`) still see the account's read-only home.
+
+This narrows nothing about the trust model: jobs still share one UID, the
+shared caches, and the host.
+
 ## Quickstart
 
 ### 1. GitHub App
@@ -327,6 +359,7 @@ strict: an unknown key is a startup error, not a silent no-op.
 | `runner.work_directory` | `_work` | JIT work folder inside the slot |
 | `runner.shared_cache_paths` | `.cache`, `.local/share/mise`, `go/pkg/mod` | HOME-relative shared caches added to each slot's `ReadWritePaths` |
 | `runner.extra_address_families` | unset | `AF_` tokens added to each slot's `RestrictAddressFamilies` on top of `AF_UNIX`, `AF_INET`, `AF_INET6` (e.g. `AF_NETLINK`); each added family increases kernel attack surface, so enable only when needed |
+| `runner.job_home` | unset | absolute, existing mount point that each job sees as its own writable HOME; see [Per-job HOME](#per-job-home). systemd backend only |
 | `runner.disable_update` | `true` | runner self-update off at scale-set creation |
 | `runner.user` | `gha-runner` | |
 | `runner.group` | account primary group | |
@@ -360,7 +393,9 @@ syntax, payload pin/digest rules, paths, timeouts, and observability/scaling
 settings. The sum of pool floors must fit `capacity.max_runners`. Validation
 also checks every key path, parses the runner environment file, requires
 non-empty `PATH` and `HOME`, and checks for `/run/systemd/system` when the
-systemd backend is selected.
+systemd backend is selected. A configured `runner.job_home` must be a clean
+absolute path to an existing directory that is not, and does not contain,
+the environment file's `HOME`.
 
 `--dry-run` stops there. Normal startup also creates and probes the shared and
 pool-qualified daemon directories, resolves the runner identity, prepares the
@@ -625,6 +660,11 @@ pool-local slot ID remains reserved until the worker finishes.
   as the runner user and leaves existing ownership unchanged. Pre-create
   writable caches for that user; the supervisor unit's cache paths must
   cover the configured list and `HOME`.
+- With `runner.job_home` set, each slot unit also gets
+  `BindPaths=<slot>/home:<job_home>` and the mount point in
+  `ReadWritePaths`. `EnvironmentFile=` is applied after `Environment=`, so a
+  unit property cannot replace the file's `HOME`; the launch shell receives
+  the path as an argument and exports it before `exec ./run.sh`.
 - The supported service runs the supervisor as root with hardening.
   Slot directories are handed to the configured runner only after a fresh
   payload copy is complete. JIT source files and the template stay owned
