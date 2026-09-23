@@ -63,6 +63,14 @@ func baseValid(t *testing.T) *Config {
 	}
 }
 
+// jobHomeDir creates and returns a mount point next to, not above, the
+// state dir that baseValid placed in the same temp directory.
+func jobHomeDir(c *Config) string {
+	dir := filepath.Join(filepath.Dir(c.Runner.EnvironmentFile), "job-home")
+	_ = os.MkdirAll(dir, 0o755)
+	return dir
+}
+
 // writeConfig writes body to a temp file and returns its path.
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
@@ -159,6 +167,32 @@ func TestValidate(t *testing.T) {
 		{"extra address family lowercase", func(c *Config) { c.Runner.ExtraAddressFamilies = []string{"AF_netlink"} }, nil, "must be an AF_ token"},
 		{"extra address family duplicate", func(c *Config) { c.Runner.ExtraAddressFamilies = []string{"AF_NETLINK", "AF_NETLINK"} }, nil, "duplicates an earlier entry"},
 		{"extra address families valid", func(c *Config) { c.Runner.ExtraAddressFamilies = []string{"AF_NETLINK", "AF_PACKET"} }, nil, ""},
+		{"job home valid", func(c *Config) {
+			c.Runtime.Backend = "systemd"
+			c.Runner.JobHome = jobHomeDir(c)
+		}, systemdDirPresent, ""},
+		{"job home needs systemd backend", func(c *Config) { c.Runner.JobHome = jobHomeDir(c) }, nil, `runner.job_home requires runtime.backend "systemd"`},
+		{"job home relative", func(c *Config) { c.Runner.JobHome = "srv/job-home" }, nil, "must be a clean absolute path"},
+		{"job home unclean", func(c *Config) { c.Runner.JobHome = "/srv/../srv/job-home" }, nil, "must be a clean absolute path"},
+		{"job home is root", func(c *Config) { c.Runner.JobHome = "/" }, nil, "must be a clean absolute path"},
+		{"job home contains colon", func(c *Config) { c.Runner.JobHome = "/srv/job:home" }, nil, "must not contain ':'"},
+		{"job home is the env HOME", func(c *Config) { c.Runner.JobHome = "/home/gha-runner" }, nil, "must not overlap the environment file's HOME"},
+		{"job home contains the env HOME", func(c *Config) { c.Runner.JobHome = "/home" }, nil, "must not overlap the environment file's HOME"},
+		{"job home inside the env HOME", func(c *Config) { c.Runner.JobHome = "/home/gha-runner/.cache" }, nil, "must not overlap the environment file's HOME"},
+		{"job home is the state dir", func(c *Config) { c.Runner.JobHome = c.Paths.StateDir }, nil, "must not overlap paths.state_dir"},
+		{"job home contains the state dir", func(c *Config) { c.Runner.JobHome = filepath.Dir(c.Paths.StateDir) }, nil, "must not overlap paths.state_dir"},
+		{"job home inside the state dir", func(c *Config) { c.Runner.JobHome = filepath.Join(c.Paths.StateDir, "pools") }, nil, "must not overlap paths.state_dir"},
+		{"job home missing", func(c *Config) { c.Runner.JobHome = jobHomeDir(c) + "-missing" }, nil, "must exist as the mount point"},
+		{"job home not a directory", func(c *Config) { c.Runner.JobHome = c.Runner.EnvironmentFile }, nil, "must be a directory"},
+		{"work directory is the job home source", func(c *Config) {
+			c.Runner.JobHome = jobHomeDir(c)
+			c.Runner.WorkDirectory = "home"
+		}, nil, `runner.work_directory "home" must not be or sit under "home"`},
+		{"work directory under the job home source", func(c *Config) {
+			c.Runner.JobHome = jobHomeDir(c)
+			c.Runner.WorkDirectory = "home/work"
+		}, nil, `runner.work_directory "home/work" must not be or sit under "home"`},
+		{"work directory named home without job home", func(c *Config) { c.Runner.WorkDirectory = "home" }, nil, ""},
 	}
 
 	for _, tt := range tests {
@@ -183,6 +217,57 @@ func TestValidate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateJobHomeSymlinkOverlap(t *testing.T) {
+	old := systemdRuntimeDir
+	systemdRuntimeDir = t.TempDir()
+	t.Cleanup(func() { systemdRuntimeDir = old })
+
+	t.Run("job home aliases state dir", func(t *testing.T) {
+		c := baseValid(t)
+		c.Runtime.Backend = BackendSystemd
+		if err := os.Mkdir(c.Paths.StateDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		c.Runner.JobHome = filepath.Join(filepath.Dir(c.Paths.StateDir), "state-alias")
+		if err := os.Symlink(c.Paths.StateDir, c.Runner.JobHome); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "must not overlap paths.state_dir") {
+			t.Fatalf("Validate() = %v, want state dir overlap error", err)
+		}
+	})
+
+	t.Run("state dir aliases job home through missing child", func(t *testing.T) {
+		c := baseValid(t)
+		c.Runtime.Backend = BackendSystemd
+		c.Runner.JobHome = jobHomeDir(c)
+		alias := filepath.Join(filepath.Dir(c.Runner.JobHome), "home-alias")
+		if err := os.Symlink(c.Runner.JobHome, alias); err != nil {
+			t.Fatal(err)
+		}
+		c.Paths.StateDir = filepath.Join(alias, "new-state")
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "must not overlap paths.state_dir") {
+			t.Fatalf("Validate() = %v, want state dir overlap error", err)
+		}
+	})
+
+	t.Run("environment home aliases job home", func(t *testing.T) {
+		c := baseValid(t)
+		c.Runtime.Backend = BackendSystemd
+		c.Runner.JobHome = jobHomeDir(c)
+		alias := filepath.Join(filepath.Dir(c.Runner.JobHome), "home-alias")
+		if err := os.Symlink(c.Runner.JobHome, alias); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(c.Runner.EnvironmentFile, []byte("PATH=/usr/bin\nHOME="+filepath.Join(alias, "new-home")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "must not overlap the environment file's HOME") {
+			t.Fatalf("Validate() = %v, want environment HOME overlap error", err)
+		}
+	})
 }
 
 // TestValidateJoinsAllErrors proves Validate reports every failure at
@@ -301,6 +386,7 @@ runner:
   group: some-group
   shared_cache_paths: [.npm, .gradle]
   extra_address_families: [AF_NETLINK]
+  job_home: /srv/job-home
   environment_file: /tmp/runner.env
 paths:
   state_dir: /tmp/state
@@ -347,6 +433,9 @@ observability:
 	}
 	if len(c.Runner.ExtraAddressFamilies) != 1 || c.Runner.ExtraAddressFamilies[0] != "AF_NETLINK" {
 		t.Errorf("Runner.ExtraAddressFamilies = %v, want [AF_NETLINK]", c.Runner.ExtraAddressFamilies)
+	}
+	if c.Runner.JobHome != "/srv/job-home" {
+		t.Errorf("Runner.JobHome = %q, want /srv/job-home", c.Runner.JobHome)
 	}
 	if c.Paths.StateDir != "/tmp/state" || c.Paths.CacheDir != "/tmp/cache" || c.Paths.LogDir != "/tmp/log" {
 		t.Errorf("Paths = %+v", c.Paths)

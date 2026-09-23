@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -144,6 +145,9 @@ func newTestBackend(t *testing.T, opts ...Options) (*Backend, string, string) {
 		if o.ExtraAddressFamilies != nil {
 			base.ExtraAddressFamilies = o.ExtraAddressFamilies
 		}
+		if o.JobHome != "" {
+			base.JobHome = o.JobHome
+		}
 		if o.Log != nil {
 			base.Log = o.Log
 		}
@@ -201,6 +205,32 @@ func TestStartGoldenArgVector(t *testing.T) {
 	}
 }
 
+// TestStartJobHomeArgVector: a configured job home adds the mount point to
+// ReadWritePaths, binds the slot's own home over it, and hands the path to
+// the launch script, which sets HOME after systemd applied EnvironmentFile.
+// TestStartGoldenArgVector proves the vector is unchanged without it.
+func TestStartJobHomeArgVector(t *testing.T) {
+	b, _, _ := newTestBackend(t, Options{JobHome: "/var/lib/tentacles job-home"})
+	args := b.startArgs(sampleSpec())
+	got := strings.Join(args, "\n")
+	for _, want := range []string{
+		`ReadWritePaths="/var/lib/tentacles/pools/default/slots/0001" "/tmp" "/var/lib/tentacles job-home"`,
+		`BindPaths="/var/lib/tentacles/pools/default/slots/0001/home":"/var/lib/tentacles job-home"`,
+	} {
+		if !strings.Contains(got, "-p\n"+want+"\n") {
+			t.Errorf("property %q missing from args:\n%s", want, got)
+		}
+	}
+	wantTail := []string{
+		"/bin/sh", "-c",
+		`HOME=$1; export HOME; jit=$(cat "$CREDENTIALS_DIRECTORY/jit") || exit; exec ./run.sh --jitconfig "$jit"`,
+		"sh", "/var/lib/tentacles job-home",
+	}
+	if len(args) < len(wantTail) || !slices.Equal(args[len(args)-len(wantTail):], wantTail) {
+		t.Errorf("command tail = %q, want %q", args[max(0, len(args)-len(wantTail)):], wantTail)
+	}
+}
+
 // testStartSpec provides a fresh slot and a private JIT file using the
 // current user's identity and an isolated HOME for cache creation.
 func testStartSpec(t *testing.T) runner.Spec {
@@ -253,6 +283,44 @@ func TestStartAddsRunnerCacheDirs(t *testing.T) {
 	}
 	if source.Mode().Perm() != 0600 {
 		t.Fatal("JIT source mode changed")
+	}
+}
+
+// TestStartCreatesJobHome: the bind-mount source is created inside the fresh
+// slot before it is handed to the runner, so it is removed with the slot.
+func TestStartCreatesJobHome(t *testing.T) {
+	b, runLog, _ := newTestBackend(t, Options{JobHome: t.TempDir()})
+	spec := testStartSpec(t)
+	if err := b.Start(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(filepath.Join(spec.SlotDir, runner.JobHomeSubdir))
+	if err != nil || !fi.IsDir() {
+		t.Fatalf("job home not created as a directory: %v", err)
+	}
+	if fi.Mode().Perm() != 0o700 {
+		t.Errorf("job home mode = %v, want 0700", fi.Mode().Perm())
+	}
+	if !strings.Contains(readLog(t, runLog), "BindPaths=") {
+		t.Error("BindPaths missing from systemd-run args")
+	}
+}
+
+// TestStartRejectsExistingJobHome: an entry already at <slot>/home means the
+// slot is not fresh. Start must fail before systemd-run, provably unstarted,
+// rather than bind whatever that entry points at.
+func TestStartRejectsExistingJobHome(t *testing.T) {
+	b, runLog, _ := newTestBackend(t, Options{JobHome: t.TempDir()})
+	spec := testStartSpec(t)
+	if err := os.Symlink(t.TempDir(), filepath.Join(spec.SlotDir, runner.JobHomeSubdir)); err != nil {
+		t.Fatal(err)
+	}
+	err := b.Start(context.Background(), spec)
+	if err == nil || !errors.Is(err, runner.ErrNotStarted) {
+		t.Fatalf("Start() = %v, want an error wrapping ErrNotStarted", err)
+	}
+	if _, statErr := os.Stat(runLog); statErr == nil {
+		t.Error("systemd-run was invoked despite the existing job home")
 	}
 }
 

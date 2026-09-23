@@ -20,6 +20,10 @@ type JIT struct {
 	RunnerName string
 }
 
+// JobHomeSubdir is the slot-relative directory the systemd backend binds over
+// runner.job_home. Config validation keeps runner.work_directory out of it.
+const JobHomeSubdir = "home"
+
 // Spec describes one runner start: where it lives, who runs it, and the
 // resource limits to apply. Backends map these onto their native
 // mechanism (systemd properties, exec attrs, ...).
