@@ -155,6 +155,10 @@ func TestValidate(t *testing.T) {
 		{"shared cache path is home itself", func(c *Config) { c.Runner.SharedCachePaths = []string{"."} }, nil, "must name a directory"},
 		{"shared cache path duplicate", func(c *Config) { c.Runner.SharedCachePaths = []string{".cache", ".cache"} }, nil, "duplicates an earlier entry"},
 		{"shared cache paths valid", func(c *Config) { c.Runner.SharedCachePaths = []string{".cache", ".npm", ".local/share/pnpm"} }, nil, ""},
+		{"extra address family malformed", func(c *Config) { c.Runner.ExtraAddressFamilies = []string{"netlink"} }, nil, `extra_address_families[0] "netlink" must be an AF_ token`},
+		{"extra address family lowercase", func(c *Config) { c.Runner.ExtraAddressFamilies = []string{"AF_netlink"} }, nil, "must be an AF_ token"},
+		{"extra address family duplicate", func(c *Config) { c.Runner.ExtraAddressFamilies = []string{"AF_NETLINK", "AF_NETLINK"} }, nil, "duplicates an earlier entry"},
+		{"extra address families valid", func(c *Config) { c.Runner.ExtraAddressFamilies = []string{"AF_NETLINK", "AF_PACKET"} }, nil, ""},
 	}
 
 	for _, tt := range tests {
@@ -242,6 +246,9 @@ runner:
 		c.Runner.SharedCachePaths[1] != ".local/share/mise" || c.Runner.SharedCachePaths[2] != "go/pkg/mod" {
 		t.Errorf("Runner.SharedCachePaths = %v, want the default three", c.Runner.SharedCachePaths)
 	}
+	if len(c.Runner.ExtraAddressFamilies) != 0 {
+		t.Errorf("Runner.ExtraAddressFamilies = %v, want empty by default", c.Runner.ExtraAddressFamilies)
+	}
 	if c.Paths.StateDir != "/var/lib/tentacles" || c.Paths.CacheDir != "/var/cache/tentacles" || c.Paths.LogDir != "/var/log/tentacles" {
 		t.Errorf("Paths = %+v, want production directory defaults", c.Paths)
 	}
@@ -293,6 +300,7 @@ runner:
   user: some-user
   group: some-group
   shared_cache_paths: [.npm, .gradle]
+  extra_address_families: [AF_NETLINK]
   environment_file: /tmp/runner.env
 paths:
   state_dir: /tmp/state
@@ -336,6 +344,9 @@ observability:
 	}
 	if len(c.Runner.SharedCachePaths) != 2 || c.Runner.SharedCachePaths[0] != ".npm" || c.Runner.SharedCachePaths[1] != ".gradle" {
 		t.Errorf("Runner.SharedCachePaths = %v, want [.npm .gradle]", c.Runner.SharedCachePaths)
+	}
+	if len(c.Runner.ExtraAddressFamilies) != 1 || c.Runner.ExtraAddressFamilies[0] != "AF_NETLINK" {
+		t.Errorf("Runner.ExtraAddressFamilies = %v, want [AF_NETLINK]", c.Runner.ExtraAddressFamilies)
 	}
 	if c.Paths.StateDir != "/tmp/state" || c.Paths.CacheDir != "/tmp/cache" || c.Paths.LogDir != "/tmp/log" {
 		t.Errorf("Paths = %+v", c.Paths)

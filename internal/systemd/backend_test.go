@@ -141,6 +141,9 @@ func newTestBackend(t *testing.T, opts ...Options) (*Backend, string, string) {
 		if o.CacheSubdirs != nil {
 			base.CacheSubdirs = o.CacheSubdirs
 		}
+		if o.ExtraAddressFamilies != nil {
+			base.ExtraAddressFamilies = o.ExtraAddressFamilies
+		}
 		if o.Log != nil {
 			base.Log = o.Log
 		}
@@ -278,6 +281,40 @@ func TestStartUsesConfiguredCacheSubdirs(t *testing.T) {
 			t.Errorf("default cache path %q leaked into args", sub)
 		}
 	}
+}
+
+func TestStartRestrictAddressFamilies(t *testing.T) {
+	const prop = "RestrictAddressFamilies="
+	find := func(b *Backend) string {
+		for _, a := range b.startArgs(sampleSpec()) {
+			if strings.HasPrefix(a, prop) {
+				return strings.TrimPrefix(a, prop)
+			}
+		}
+		t.Fatal("RestrictAddressFamilies property missing from args")
+		return ""
+	}
+
+	t.Run("default is the base three", func(t *testing.T) {
+		b, _, _ := newTestBackend(t)
+		if got := find(b); got != "AF_UNIX AF_INET AF_INET6" {
+			t.Errorf("families = %q, want the base three", got)
+		}
+	})
+
+	t.Run("extras append after the base", func(t *testing.T) {
+		b, _, _ := newTestBackend(t, Options{ExtraAddressFamilies: []string{"AF_NETLINK", "AF_PACKET"}})
+		if got := find(b); got != "AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET" {
+			t.Errorf("families = %q, want the base three then the extras", got)
+		}
+	})
+
+	t.Run("an extra repeating a base family is dropped", func(t *testing.T) {
+		b, _, _ := newTestBackend(t, Options{ExtraAddressFamilies: []string{"AF_INET", "AF_NETLINK"}})
+		if got := find(b); got != "AF_UNIX AF_INET AF_INET6 AF_NETLINK" {
+			t.Errorf("families = %q, want no repeated base family", got)
+		}
+	})
 }
 
 // TestUsageReadsAccounting: the usage sampler reads cumulative CPU time

@@ -326,6 +326,7 @@ strict: an unknown key is a startup error, not a silent no-op.
 | `runner.sha256` | unset (required when `version` is pinned) | unless `TENTACLES_ALLOW_UNVERIFIED_PAYLOAD=1` |
 | `runner.work_directory` | `_work` | JIT work folder inside the slot |
 | `runner.shared_cache_paths` | `.cache`, `.local/share/mise`, `go/pkg/mod` | HOME-relative shared caches added to each slot's `ReadWritePaths` |
+| `runner.extra_address_families` | unset | `AF_` tokens added to each slot's `RestrictAddressFamilies` on top of `AF_UNIX`, `AF_INET`, `AF_INET6` (e.g. `AF_NETLINK`); each added family increases kernel attack surface, so enable only when needed |
 | `runner.disable_update` | `true` | runner self-update off at scale-set creation |
 | `runner.user` | `gha-runner` | |
 | `runner.group` | account primary group | |
