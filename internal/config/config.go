@@ -362,11 +362,28 @@ func (c *Config) Validate() error {
 			if strings.Contains(home, ":") || strings.Contains(c.Paths.StateDir, ":") {
 				fail("runner.job_home %q and paths.state_dir must not contain ':', the BindPaths separator", home)
 			}
-			if filepath.IsAbs(envHome) && pathsOverlap(home, filepath.Clean(envHome)) {
-				fail("runner.job_home %q must not overlap the environment file's HOME %q: the mount would hide the account's home or a shared cache", home, envHome)
-			}
-			if filepath.IsAbs(c.Paths.StateDir) && pathsOverlap(home, filepath.Clean(c.Paths.StateDir)) {
-				fail("runner.job_home %q must not overlap paths.state_dir %q: the mount would hide the slot directories", home, c.Paths.StateDir)
+			// Compare the paths systemd will actually traverse, including
+			// symlinked parents of directories not created until startup.
+			resolvedHome, err := resolvePathForOverlap(home)
+			if err != nil {
+				fail("runner.job_home %q cannot be resolved: %v", home, err)
+			} else {
+				if filepath.IsAbs(envHome) {
+					resolvedEnvHome, err := resolvePathForOverlap(envHome)
+					if err != nil {
+						fail("environment file's HOME %q cannot be resolved: %v", envHome, err)
+					} else if pathsOverlap(resolvedHome, resolvedEnvHome) {
+						fail("runner.job_home %q must not overlap the environment file's HOME %q: the mount would hide the account's home or a shared cache", home, envHome)
+					}
+				}
+				if filepath.IsAbs(c.Paths.StateDir) {
+					resolvedStateDir, err := resolvePathForOverlap(c.Paths.StateDir)
+					if err != nil {
+						fail("paths.state_dir %q cannot be resolved: %v", c.Paths.StateDir, err)
+					} else if pathsOverlap(resolvedHome, resolvedStateDir) {
+						fail("runner.job_home %q must not overlap paths.state_dir %q: the mount would hide the slot directories", home, c.Paths.StateDir)
+					}
+				}
 			}
 			if fi, err := os.Stat(home); err != nil {
 				fail("runner.job_home %q must exist as the mount point: %v", home, err)
@@ -612,6 +629,25 @@ func probeWritable(dir string) error {
 // pathsOverlap reports whether either path is the other or lies beneath it.
 func pathsOverlap(a, b string) bool {
 	return pathContains(a, b) || pathContains(b, a)
+}
+
+// resolvePathForOverlap follows symlinks through the last existing ancestor.
+// State and account home directories may not exist yet during config validation.
+func resolvePathForOverlap(path string) (string, error) {
+	path = filepath.Clean(path)
+	for ancestor := path; ; ancestor = filepath.Dir(ancestor) {
+		resolved, err := filepath.EvalSymlinks(ancestor)
+		if err == nil {
+			suffix, err := filepath.Rel(ancestor, path)
+			if err != nil {
+				return "", err
+			}
+			return filepath.Join(resolved, suffix), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) || filepath.Dir(ancestor) == ancestor {
+			return "", err
+		}
+	}
 }
 
 // pathContains reports whether child is parent or lies beneath it. Both must

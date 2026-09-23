@@ -219,6 +219,57 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestValidateJobHomeSymlinkOverlap(t *testing.T) {
+	old := systemdRuntimeDir
+	systemdRuntimeDir = t.TempDir()
+	t.Cleanup(func() { systemdRuntimeDir = old })
+
+	t.Run("job home aliases state dir", func(t *testing.T) {
+		c := baseValid(t)
+		c.Runtime.Backend = BackendSystemd
+		if err := os.Mkdir(c.Paths.StateDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		c.Runner.JobHome = filepath.Join(filepath.Dir(c.Paths.StateDir), "state-alias")
+		if err := os.Symlink(c.Paths.StateDir, c.Runner.JobHome); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "must not overlap paths.state_dir") {
+			t.Fatalf("Validate() = %v, want state dir overlap error", err)
+		}
+	})
+
+	t.Run("state dir aliases job home through missing child", func(t *testing.T) {
+		c := baseValid(t)
+		c.Runtime.Backend = BackendSystemd
+		c.Runner.JobHome = jobHomeDir(c)
+		alias := filepath.Join(filepath.Dir(c.Runner.JobHome), "home-alias")
+		if err := os.Symlink(c.Runner.JobHome, alias); err != nil {
+			t.Fatal(err)
+		}
+		c.Paths.StateDir = filepath.Join(alias, "new-state")
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "must not overlap paths.state_dir") {
+			t.Fatalf("Validate() = %v, want state dir overlap error", err)
+		}
+	})
+
+	t.Run("environment home aliases job home", func(t *testing.T) {
+		c := baseValid(t)
+		c.Runtime.Backend = BackendSystemd
+		c.Runner.JobHome = jobHomeDir(c)
+		alias := filepath.Join(filepath.Dir(c.Runner.JobHome), "home-alias")
+		if err := os.Symlink(c.Runner.JobHome, alias); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(c.Runner.EnvironmentFile, []byte("PATH=/usr/bin\nHOME="+filepath.Join(alias, "new-home")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "must not overlap the environment file's HOME") {
+			t.Fatalf("Validate() = %v, want environment HOME overlap error", err)
+		}
+	})
+}
+
 // TestValidateJoinsAllErrors proves Validate reports every failure at
 // once (errors.Join), not just the first one.
 func TestValidateJoinsAllErrors(t *testing.T) {
